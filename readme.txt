@@ -42,6 +42,13 @@ Getting Started > About Application Deployment >
 Deployment Product Terms in the MathWorks Documentation
 Center.
 
+# github token access guideline:
+# clone into the repo first, then generate access token from gitub to authenticate
+# must be done for any repo that was cloned from my profile
+
+git clone <repo>
+git remote set-url origin https://<USERNAME>:<TOKEN>@github.com/<USERNAME>/<REPO>.git
+
 
 
 
