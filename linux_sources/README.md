@@ -13,7 +13,8 @@ cd linux_sources
 make
 ```
 
-This produces the `tm_visualizer` executable. `make clean` removes it and the
+This produces two executables: `tm_visualizer` (the visualizer) and
+`console_only` (a raw packet dumper). `make clean` removes them and the
 `build/` directory.
 
 ## Running
@@ -87,6 +88,26 @@ and in the original MATLAB visualizer.
 - red rectangles — lanes (X-Y view only), with per-lane target counts in the
   status line
 
+## console_only: raw TLV packet dump
+
+`console_only` prints every frame's header fields and each TLV (type, name,
+length, payload hex) straight to stdout with no screen control — useful for
+debugging the stream format or piping to a file:
+
+```sh
+./console_only capture.dat                 # dump a recorded stream
+./console_only -d /dev/ttyACM1             # dump a live data UART (Ctrl-C stops)
+./console_only capture.dat > dump.txt      # save the labelled dump
+
+# send a chirp cfg to an idle device first, then dump (-c and -g go together):
+./console_only -d /dev/ttyACM1 -c /dev/ttyACM0 \
+               -g ../chirp_configs/18xx_traffic_monitoring_70m_MIMO_3D.cfg
+```
+
+Without `-c`/`-g` the device must already be configured and streaming. As in
+the visualizer, if the data port already has bytes waiting, the cfg is not
+re-sent (press NRST on the EVM to load a new one).
+
 ## Source layout
 
 | File | Ports |
@@ -97,3 +118,4 @@ and in the original MATLAB visualizer.
 | `src/serial_port.*` | `initCfgPort.m`, `initDataPort.m`, `loadCfg.m`, `readUARTtoBuffer.m` |
 | `src/visualizer.*` | figure/plot code: `init3DPlot_TM.m`, `drawFOVLines.m`, `initLanes.m`, stats annotation |
 | `src/tm_types.h` | shared frame/point-cloud/target structures |
+| `src/console_only.cpp` | standalone raw TLV packet dumper (`console_only` executable) |
