@@ -13,9 +13,10 @@ cd linux_sources
 make
 ```
 
-This produces two executables: `tm_visualizer` (the visualizer) and
-`console_only` (a raw packet dumper). `make clean` removes them and the
-`build/` directory.
+This produces three executables: `tm_visualizer` (the visualizer),
+`console_only` (a raw packet dumper) and `console_only_Pi` (a target
+detection reporter for headless/Raspberry Pi use). `make clean` removes them
+and the `build/` directory.
 
 ## Running
 
@@ -108,6 +109,31 @@ Without `-c`/`-g` the device must already be configured and streaming. As in
 the visualizer, if the data port already has bytes waiting, the cfg is not
 re-sent (press NRST on the EVM to load a new one).
 
+## console_only_Pi: target detection report (Raspberry Pi)
+
+`console_only_Pi` takes the same arguments as `console_only` but, instead of
+hex dumps, prints one plain-text report per frame saying whether a target is
+detected, with each target's track id, position, range, velocity, speed and
+acceleration, plus a summary on exit. The output is line-oriented with no
+screen control, so it works over SSH or a serial console on a Raspberry Pi.
+Build it on the Pi itself with `make` (Raspberry Pi OS ships g++), then:
+
+```sh
+./console_only_Pi capture.dat              # report from a recorded stream
+./console_only_Pi -d /dev/ttyACM1          # live report (Ctrl-C stops)
+./console_only_Pi -d /dev/ttyACM1 -c /dev/ttyACM0 \
+                  -g ../chirp_configs/18xx_traffic_monitoring_70m_MIMO_3D.cfg
+```
+
+Example output:
+
+```
+Frame 2      | TARGET DETECTED: 1 target(s), 12 point-cloud detections
+  TID 7    pos (   1.00,   12.00,    0.00) m  range  12.04 m
+           vel (   0.50,    8.00,    0.00) m/s  speed   8.02 m/s  accel (0.10, 0.20, 0.00) m/s^2
+Frame 3      | no target detected (9 point-cloud detections)
+```
+
 ## Source layout
 
 | File | Ports |
@@ -119,3 +145,4 @@ re-sent (press NRST on the EVM to load a new one).
 | `src/visualizer.*` | figure/plot code: `init3DPlot_TM.m`, `drawFOVLines.m`, `initLanes.m`, stats annotation |
 | `src/tm_types.h` | shared frame/point-cloud/target structures |
 | `src/console_only.cpp` | standalone raw TLV packet dumper (`console_only` executable) |
+| `src/console_only_Pi.cpp` | target detection reporter for Raspberry Pi (`console_only_Pi` executable) |
