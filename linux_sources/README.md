@@ -134,6 +134,32 @@ Frame 2      | TARGET DETECTED: 1 target(s), 12 point-cloud detections
 Frame 3      | no target detected (9 point-cloud detections)
 ```
 
+### Running console_only_Pi automatically at boot
+
+`startpi_boot.sh` runs the same command as `startpi_console.sh`, hardened
+for unattended start: it works from any directory, waits (up to 60 s) for
+the EVM's serial ports to enumerate, and logs everything to `logs/`.
+To have the Pi launch it after every successful boot, install it once as a
+systemd service:
+
+```sh
+cd linux_sources
+make                        # build console_only_Pi first
+./install_boot_service.sh   # writes and enables console_only_pi.service
+```
+
+The service starts after boot, restarts automatically if the ports are not
+up yet or the program fails, and runs as the installing user. Useful
+commands afterwards:
+
+```sh
+systemctl status console_only_pi        # is it running?
+journalctl -u console_only_pi -f        # follow live output (also in logs/)
+sudo systemctl stop console_only_pi     # stop currently running instance (acts like <ctl-c>)
+sudo systemctl enable console_only_pi   # start the service on next boot if below command was used
+sudo systemctl disable console_only_pi  # remove from boot (wont disable currently running instance)
+```
+
 ## Source layout
 
 | File | Ports |
