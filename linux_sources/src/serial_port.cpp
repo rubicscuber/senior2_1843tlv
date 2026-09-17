@@ -97,6 +97,20 @@ int SerialPort::bytesAvailable() const
     return count;
 }
 
+int SerialPort::bytesAvailableWithin(int timeoutMs) const
+{
+    if (fd_ < 0)
+        return 0;
+    fd_set readSet;
+    FD_ZERO(&readSet);
+    FD_SET(fd_, &readSet);
+    timeval tv{};
+    tv.tv_sec = timeoutMs / 1000;
+    tv.tv_usec = (timeoutMs % 1000) * 1000;
+    select(fd_ + 1, &readSet, nullptr, nullptr, &tv);
+    return bytesAvailable();
+}
+
 int SerialPort::readBytes(uint8_t* buf, size_t maxLen)
 {
     if (fd_ < 0 || maxLen == 0)

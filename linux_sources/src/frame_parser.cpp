@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -15,6 +16,18 @@ const uint8_t MAGIC_WORD[8] = {2, 1, 4, 3, 6, 5, 8, 7};
 constexpr uint32_t UART_MSG_TRACKERPROC_DETECTED_POINTS = 1000;
 constexpr uint32_t UART_MSG_TRACKERPROC_TARGET_LIST = 1010;
 constexpr uint32_t UART_MSG_TRACKERPROC_TARGET_INDEX = 1011;
+
+bool g_quiet = false;
+
+void diag(const char* fmt, ...)
+{
+    if (g_quiet)
+        return;
+    va_list args;
+    va_start(args, fmt);
+    std::vfprintf(stderr, fmt, args);
+    va_end(args);
+}
 
 uint32_t readU32(const uint8_t* p)
 {
@@ -48,7 +61,7 @@ size_t parseHeader(const uint8_t* pkt, size_t pktLen, FrameHeader& hdr, bool& va
     constexpr size_t HEADER_LEN = 8 + 8 * 4;
     valid = false;
     if (pktLen < HEADER_LEN) {
-        std::printf("Issue with frame. Skipping. Cannot parse header. Missing bytes.\n");
+        diag("Issue with frame. Skipping. Cannot parse header. Missing bytes.\n");
         return 0;
     }
     std::memcpy(hdr.magicWord, pkt, 8);
@@ -63,9 +76,9 @@ size_t parseHeader(const uint8_t* pkt, size_t pktLen, FrameHeader& hdr, bool& va
 
     valid = (hdr.packetLength == pktLen);
     if (!valid) {
-        std::printf("Issue with Frame %u. Skipping. Expected packet length: %u; "
-                    "Actual length: %zu.\n",
-                    hdr.frameNumber, hdr.packetLength, pktLen);
+        diag("Issue with Frame %u. Skipping. Expected packet length: %u; "
+             "Actual length: %zu.\n",
+             hdr.frameNumber, hdr.packetLength, pktLen);
     }
     return HEADER_LEN;
 }
@@ -163,6 +176,21 @@ std::vector<Frame> parseBytesTM(std::vector<uint8_t>& buffer, ReadMode mode,
     numFramesAvailable = static_cast<int>(magicIdx.size()) - 1;
     if (numFramesAvailable <= 0) {
         numFramesAvailable = 0;
+        // No complete frame. If the buffer has nevertheless reached its limit
+        // (a stream without frame starts, or a corrupt oversized frame), drop
+        // the dead bytes so the caller can keep reading instead of stalling
+        // or growing without bound.
+        if (buffer.size() >= BYTES_BUFFER_MAX_SIZE) {
+            const size_t keepFrom = magicIdx.empty() ? buffer.size() : magicIdx.front();
+            if (keepFrom == 0 || buffer.size() - keepFrom >= BYTES_BUFFER_MAX_SIZE) {
+                diag("Discarding %zu buffered bytes: no complete frame found.\n",
+                     buffer.size());
+                buffer.clear();
+            } else {
+                diag("Discarding %zu bytes before the next frame start.\n", keepFrom);
+                buffer.erase(buffer.begin(), buffer.begin() + keepFrom);
+            }
+        }
         return frames;
     }
 
@@ -176,9 +204,16 @@ std::vector<Frame> parseBytesTM(std::vector<uint8_t>& buffer, ReadMode mode,
 
     // keep unconsumed bytes (the trailing, still-incomplete frame)
     buffer.erase(buffer.begin(), buffer.begin() + magicIdx[numToParse]);
-    if (buffer.size() > BYTES_BUFFER_MAX_SIZE)
+    if (buffer.size() >= BYTES_BUFFER_MAX_SIZE) {
+        diag("Discarding %zu buffered bytes: oversized partial frame.\n", buffer.size());
         buffer.clear();
+    }
     return frames;
+}
+
+void setFrameParserQuiet(bool quiet)
+{
+    g_quiet = quiet;
 }
 
 bool readDatFileToBuffer(const std::string& path, std::vector<uint8_t>& buffer)

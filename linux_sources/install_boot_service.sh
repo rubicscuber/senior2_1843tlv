@@ -34,7 +34,9 @@ Type=simple
 User=$RUN_USER
 WorkingDirectory=$SCRIPT_DIR
 ExecStart=$SCRIPT_DIR/startpi_boot.sh
-Restart=on-failure
+# relaunch whenever it exits (ports missing, program crash, EVM unplugged);
+# a manual 'systemctl stop' is not restarted
+Restart=always
 RestartSec=10
 
 [Install]

@@ -24,8 +24,18 @@ constexpr size_t BYTES_BUFFER_MAX_SIZE = 1u << 16;
 // Parsed frames are removed from the buffer; the trailing partial frame is
 // kept for the next call. numFramesAvailable reports how many complete
 // frames were present before parsing.
+//
+// The buffer can never grow or stall without bound: if it reaches
+// BYTES_BUFFER_MAX_SIZE without containing a complete frame, everything
+// before the last frame start is discarded (or everything, if there is no
+// frame start or the partial frame is itself oversized).
 std::vector<Frame> parseBytesTM(std::vector<uint8_t>& buffer, ReadMode mode,
                                 int& numFramesAvailable);
+
+// Suppress the parser's diagnostic messages (bad frame lengths, discarded
+// bytes). They go to stderr; a full-screen display can turn them off and
+// show the counts instead.
+void setFrameParserQuiet(bool quiet);
 
 // Load a recorded UART stream into a byte buffer. Detects the format
 // automatically: ASCII hex ("02 01 04 03 ...", as written by the MATLAB and

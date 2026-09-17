@@ -188,7 +188,8 @@ int runSerial(const std::string& device, const std::string& cliDevice,
             std::fprintf(stderr, "Error: Could not open CFG file. Quitting.\n");
             return 1;
         }
-        if (port.bytesAvailable() > 0) {
+        // wait longer than one frame period so a streaming device is detected
+        if (port.bytesAvailableWithin(500) > 0) {
             std::printf("Device appears to already be running. Will not load a "
                         "new configuration. To load a new config, press NRST on "
                         "the EVM and try again.\n");
@@ -215,6 +216,14 @@ int runSerial(const std::string& device, const std::string& cliDevice,
             if (keepFrom > 0) {
                 buf.erase(buf.begin(), buf.begin() + keepFrom);
                 streamOffset += keepFrom;
+            }
+            // a partial frame can never legitimately be this large: the
+            // stream has no frame starts, so drop it rather than grow forever
+            if (buf.size() >= BYTES_BUFFER_MAX_SIZE) {
+                std::printf("Discarding %zu buffered bytes: no complete frame found.\n",
+                            buf.size());
+                streamOffset += buf.size();
+                buf.clear();
             }
             std::fflush(stdout);
         } else {

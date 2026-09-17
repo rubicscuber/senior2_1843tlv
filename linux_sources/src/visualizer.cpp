@@ -221,6 +221,8 @@ void TerminalViz::render(const RenderData& d)
     out << " | Num Tracked Obj: ";
     if (d.numTargets >= 0)
         out << d.numTargets;
+    if (!d.playback)
+        out << " | Bad frames: " << d.invalidFrames;
     if (!d.laneCounts.empty()) {
         out << " | Lanes:";
         for (size_t i = 0; i < d.laneCounts.size(); i++)
@@ -272,6 +274,8 @@ void TerminalViz::printStatsLine(const RenderData& d)
                 d.frameNumber, d.numFramesAvailable,
                 d.numPoints >= 0 ? d.numPoints : 0,
                 d.numTargets >= 0 ? d.numTargets : 0);
+    if (d.invalidFrames > 0)
+        std::printf(" | Bad frames: %lu", d.invalidFrames);
     for (size_t i = 0; i < d.laneCounts.size(); i++)
         std::printf(" | Lane %zu: %d", i + 1, d.laneCounts[i]);
     for (size_t i = 0; i < d.tgtX.size(); i++)

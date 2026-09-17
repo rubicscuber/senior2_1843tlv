@@ -27,6 +27,7 @@ struct RenderData {
     std::vector<double> tgtX, tgtY, tgtZ;
     std::vector<uint32_t> tgtId;
     std::vector<int> laneCounts;
+    unsigned long invalidFrames = 0; // frames dropped for bad length (real-time)
 
     bool playback = false; // playback mode: show frame position and pause state
     bool paused = false;

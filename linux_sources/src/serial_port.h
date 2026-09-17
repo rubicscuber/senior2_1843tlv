@@ -24,6 +24,11 @@ public:
     // Number of bytes waiting in the input buffer (0 on error).
     int bytesAvailable() const;
 
+    // Wait up to timeoutMs for input, then return bytesAvailable(). open()
+    // flushes stale input, so use this (not bytesAvailable()) to decide
+    // whether a device is already streaming.
+    int bytesAvailableWithin(int timeoutMs) const;
+
     // Non-blocking read of up to maxLen bytes; returns bytes read (0 if none).
     int readBytes(uint8_t* buf, size_t maxLen);
 

@@ -66,6 +66,7 @@ and in the original MATLAB visualizer.
 | `--el <deg>` | elevation tilt, down is negative (default 0) |
 | `--lanes N,x,y,w,h` | lane counting: N adjacent lanes starting at (x, y), each w wide and h deep, in meters (e.g. `--lanes 2,-6,10,6,20`) |
 | `--view xy\|yz\|xz` | initial plot projection (default `xy`) |
+| `--fps <n>` | real-time mode: maximum display refresh rate (default 20). The newest frame is always shown and the backlog is discarded, so lowering this on a slow console (Pi HDMI/serial) costs nothing but smoothness |
 | `--no-load` | do not send the cfg to the device |
 | `--no-plot` | print one stats line per frame instead of drawing the plot |
 | `--paused` | start playback paused |
@@ -88,6 +89,11 @@ and in the original MATLAB visualizer.
   their track id; full ids and positions are listed under the plot
 - red rectangles — lanes (X-Y view only), with per-lane target counts in the
   status line
+- the status line's "Num Frames in Buffer" is how many frames arrived since
+  the last redraw (normally 1–2), and "Bad frames" counts frames discarded
+  for a wrong packet length. A steadily rising bad-frame count means bytes
+  are being lost on the serial link (loose cable, or the console cannot keep
+  up — try a lower `--fps`)
 
 ## console_only: raw TLV packet dump
 
@@ -138,7 +144,11 @@ Frame 3      | no target detected (9 point-cloud detections)
 
 `startpi_boot.sh` runs the same command as `startpi_console.sh`, hardened
 for unattended start: it works from any directory, waits (up to 60 s) for
-the EVM's serial ports to enumerate, and logs everything to `logs/`.
+the EVM's serial ports to enumerate, and logs everything to `logs/`. Logs
+are bounded so long runs cannot fill the SD card: the current log rotates
+at 10 MB (`LOG_MAX_KB`, keeping one `.old` part) and only the 10 newest
+files from earlier runs are kept (`LOG_KEEP`); both can be overridden as
+environment variables.
 To have the Pi launch it after every successful boot, install it once as a
 systemd service:
 
@@ -148,9 +158,9 @@ make                        # build console_only_Pi first
 ./install_boot_service.sh   # writes and enables console_only_pi.service
 ```
 
-The service starts after boot, restarts automatically if the ports are not
-up yet or the program fails, and runs as the installing user. Useful
-commands afterwards:
+The service starts after boot, restarts automatically whenever the program
+exits (ports not up yet, EVM unplugged, crash), and runs as the installing
+user. Useful commands afterwards:
 
 ```sh
 systemctl status console_only_pi        # is it running?

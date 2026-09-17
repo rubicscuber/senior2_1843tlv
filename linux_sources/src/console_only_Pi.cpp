@@ -128,7 +128,8 @@ int runSerial(const std::string& device, const std::string& cliDevice,
             std::fprintf(stderr, "Error: Could not open CFG file. Quitting.\n");
             return 1;
         }
-        if (port.bytesAvailable() > 0) {
+        // wait longer than one frame period so a streaming device is detected
+        if (port.bytesAvailableWithin(500) > 0) {
             std::printf("Device appears to already be running. Will not load a "
                         "new configuration. To load a new config, press NRST on "
                         "the EVM and try again.\n");

@@ -11,7 +11,10 @@
 #include <string>
 #include <vector>
 
+#include <chrono>
+
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <termios.h>
 #include <unistd.h>
@@ -46,6 +49,7 @@ struct TerminalGuard {
             return;
         termios raw = saved;
         raw.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO);
+        raw.c_iflag &= ~static_cast<tcflag_t>(IXON | IXOFF); // no Ctrl-S output freeze
         raw.c_cc[VMIN] = 0;
         raw.c_cc[VTIME] = 0;
         if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0)
@@ -64,8 +68,15 @@ struct TerminalGuard {
     }
 };
 
+// Never blocks: polls stdin first, so it is safe whether stdin is a raw tty,
+// a canonical (line-buffered) tty, /dev/null or a pipe.
 int readKey()
 {
+    pollfd pfd{};
+    pfd.fd = STDIN_FILENO;
+    pfd.events = POLLIN;
+    if (::poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN))
+        return -1;
     unsigned char c;
     if (::read(STDIN_FILENO, &c, 1) == 1)
         return c;
@@ -183,6 +194,8 @@ void printUsage(const char* prog)
         "      --lanes N,x,y,w,h lane counting: N lanes starting at (x,y), each w wide,\n"
         "                        h deep (meters)\n"
         "      --view xy|yz|xz   initial plot view (default xy)\n"
+        "      --fps <n>         max display refresh rate in real-time mode (default 20);\n"
+        "                        lower it on slow consoles, frames are never queued up\n"
         "      --no-load         do not send the cfg to the device (already running)\n"
         "      --no-plot         print one stats line per frame instead of the plot\n"
         "      --paused          start playback paused\n"
@@ -202,6 +215,7 @@ struct Options {
     Offset offset;
     Lanes lanes;
     View view = View::XY;
+    double maxFps = 20.0; // real-time display refresh cap (drawnow limitrate)
     bool loadCfgToDevice = true;
     bool plot = true;
     bool startPaused = false;
@@ -273,6 +287,13 @@ bool parseArgs(int argc, char** argv, Options& opt)
             else if (s == "xz") opt.view = View::XZ;
             else {
                 std::fprintf(stderr, "Error: unknown view '%s'\n", v);
+                return false;
+            }
+        } else if (a == "--fps") {
+            if (!(v = need(i))) return false;
+            opt.maxFps = std::stod(v);
+            if (!(opt.maxFps > 0)) {
+                std::fprintf(stderr, "Error: --fps must be greater than 0\n");
                 return false;
             }
         } else if (a == "--no-load") {
@@ -358,9 +379,10 @@ int main(int argc, char** argv)
         if (!opt.cliDev.empty() && !cfgPort.open(opt.cliDev, 115200))
             return 1;
 
-        // port status check, as in tm_visualizer.m
+        // port status check, as in tm_visualizer.m. Wait longer than one
+        // frame period so a device that is already streaming is detected.
         bool loadConfig = opt.loadCfgToDevice;
-        if (dataPort.bytesAvailable() > 0) {
+        if (dataPort.bytesAvailableWithin(500) > 0) {
             std::printf("Device appears to already be running. Will not load a new "
                         "configuration. To load a new config, press NRST on the EVM "
                         "and try again.\n");
@@ -416,13 +438,28 @@ int main(int argc, char** argv)
     const Transform tf(opt.offset);
 
     TerminalGuard term;
-    if (opt.plot)
+    if (opt.plot) {
         term.enableRaw();
+        // parser diagnostics would scribble over the plot; the stats line
+        // shows the bad-frame count instead
+        setFrameParserQuiet(true);
+    }
 
     // ---- main loop: parse UART / step frames and update the display ----
     bool paused = opt.startPaused;
     size_t frameIndex = 0;
     const int totalFrames = static_cast<int>(allFrames.size());
+
+    // real-time state: newest valid frame waiting to be drawn, refresh
+    // throttle (like MATLAB's "drawnow limitrate") and running counters
+    using Clock = std::chrono::steady_clock;
+    const auto renderInterval =
+        std::chrono::microseconds(static_cast<long>(1e6 / opt.maxFps));
+    auto lastRender = Clock::now() - renderInterval;
+    Frame pendingFrame;
+    bool havePending = false;
+    int pendingBacklog = 0;
+    unsigned long invalidFrames = 0;
 
     while (g_run) {
         // keyboard (replaces the view popup, play control and frame slider)
@@ -448,14 +485,18 @@ int main(int argc, char** argv)
             break;
 
         if (opt.realTime) {
-            // read whatever is on the UART into the byte buffer
+            // read whatever is on the UART into the byte buffer. The parser
+            // guarantees the buffer never sits full without being drained,
+            // so this loop can never stop reading permanently.
             uint8_t chunk[4096];
+            bool readAny = false;
             while (bytesBuffer.size() < BYTES_BUFFER_MAX_SIZE) {
                 const size_t room =
                     std::min(sizeof(chunk), BYTES_BUFFER_MAX_SIZE - bytesBuffer.size());
                 const int n = dataPort.readBytes(chunk, room);
                 if (n <= 0)
                     break;
+                readAny = true;
                 bytesBuffer.insert(bytesBuffer.end(), chunk, chunk + n);
                 if (recordFid) {
                     for (int i = 0; i < n; i++)
@@ -463,18 +504,36 @@ int main(int argc, char** argv)
                 }
             }
 
+            // drain every complete frame; only the newest valid one is drawn,
+            // so a slow console can never build up a growing backlog
             int numFramesAvailable = 0;
             std::vector<Frame> frames =
-                parseBytesTM(bytesBuffer, ReadMode::FIFO, numFramesAvailable);
-            if (!frames.empty() && frames.front().valid) {
-                RenderData d =
-                    buildRenderData(frames.front(), numFramesAvailable, tf, opt.lanes);
+                parseBytesTM(bytesBuffer, ReadMode::ALL, numFramesAvailable);
+            for (Frame& f : frames) {
+                if (f.valid) {
+                    pendingFrame = std::move(f);
+                    havePending = true;
+                } else {
+                    invalidFrames++;
+                }
+            }
+            if (numFramesAvailable > 0)
+                pendingBacklog = numFramesAvailable;
+
+            bool rendered = false;
+            if (havePending && Clock::now() - lastRender >= renderInterval) {
+                RenderData d = buildRenderData(pendingFrame, pendingBacklog, tf, opt.lanes);
+                d.invalidFrames = invalidFrames;
                 if (opt.plot)
                     viz.render(d);
                 else
                     TerminalViz::printStatsLine(d);
+                lastRender = Clock::now();
+                havePending = false;
+                rendered = true;
             }
-            usleep(5000);
+            if (!readAny && !rendered)
+                usleep(2000); // idle: nothing arrived and nothing to draw yet
         } else {
             const Frame& frame = allFrames[frameIndex];
             RenderData d = buildRenderData(
