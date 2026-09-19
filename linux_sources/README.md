@@ -279,28 +279,51 @@ user. Useful commands afterwards:
 
 ```sh
 systemctl status console_only_pi        # is it running?
-journalctl -u console_only_pi -f        # follow live output (also in logs/)
-sudo systemctl stop console_only_pi     # stop currently running instance (acts like <ctl-c>)
+journalctl -u console_only_pi -f        # follow live output
+
+sudo systemctl stop console_only_pi     # stop currently running instance (acts like <ctrl-c>)
+sudo systemctl start console_only_pi    # start the service immediately if it was stopped
 sudo systemctl enable console_only_pi   # start the service on next boot if below command was used
 sudo systemctl disable console_only_pi  # remove from boot (wont disable currently running instance)
+
+#another way to access the live output
+cd linux_sources && tail -f "$(ls -t logs/console_pi_*.log | head -1)"
 ```
 
 ### Requirements on Debian 13 (trixie) 64-bit
 
-- `sudo apt install build-essential` (GCC 14) to build, and optionally
-  `sudo apt install gpiod` for the command-line GPIO tools. The safety monitor
-  talks to the kernel's GPIO character device (uAPI v2, kernel 6.12 on
-  trixie); no library is needed.
+Needed for every mode (plain report, recorded files, visualizer):
+
+- `sudo apt install build-essential` to build: any GCC with C++17 support
+  (trixie ships GCC 14) plus `make`; the kernel GPIO header `<linux/gpio.h>`
+  comes with it (linux-libc-dev). No other library is used.
+- Serial port access: the user running the program must be in the `dialout`
+  group (`sudo usermod -aG dialout $USER`, then log out and in). The default
+  Raspberry Pi OS user already is. The boot service runs as the installing
+  user and keeps that user's groups.
+
+Needed only for the safety monitor with real GPIO pins (`--pulse-gpio`,
+`--led-*-gpio`; not for `--self-speed` or `--sim-gpio` runs):
+
+- A kernel with GPIO character device uAPI v2, i.e. 5.10 or newer (the build
+  refuses older headers). Any current Raspberry Pi OS or Debian kernel
+  qualifies.
 - GPIO permissions: Raspberry Pi OS ships a `gpio` group and a udev rule that
   makes `/dev/gpiochip*` `root:gpio 0660`. Plain Debian does not; run
   `./install_boot_service.sh`, which offers to create the group and rule,
   grants the service the group via `SupplementaryGroups=gpio`, and offers to
   add your user to the group (log out and in afterwards).
-- Pins are looked up by their kernel line name (`GPIO17` etc., identical in
-  the Raspberry Pi and mainline device trees); the program prints the resolved
-  chip and line at start. `--gpiochip /dev/gpiochip0` forces BCM = offset.
-- Bench checks with the libgpiod 2.x tools shipped by trixie (the 1.x syntax
-  found in older examples does not work):
+- Pins are looked up by their kernel line name (`GPIO17`, `GPIO22`, `GPIO23`
+  etc.); the program prints the resolved chip and line at start. A few header
+  pins carry other names in the mainline device tree (for example GPIO4 is
+  `GPIO_GCLK`, 14/15 are `TXD1`/`RXD1`); for those the program falls back to
+  `/dev/gpiochip0` with offset = BCM number, which is correct on a Pi 3/4, and
+  says so. `--gpiochip /dev/gpiochip0` forces that mapping for all pins.
+
+Optional: `sudo apt install gpiod` for the command-line tools used in the
+bench checks below (libgpiod 2.x syntax as shipped by trixie; the 1.x syntax
+found in older examples does not work). The program itself does not use
+libgpiod.
 
 ```sh
 gpioinfo | grep -E 'GPIO(17|22|23)\b'                       # lines exist and are unused
