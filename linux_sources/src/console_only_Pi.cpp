@@ -62,6 +62,9 @@ void signalHandler(int)
 
 constexpr uint64_t NS_PER_S = 1000000000ull;
 constexpr uint64_t SYNTHETIC_FRAME_NS = 50000000ull; // 50 ms per frame in unpaced file mode
+// no wheel pulse for this long while targets are tracked: warn that the
+// two-second rule is inactive (self speed reads 0 without pulses)
+constexpr uint64_t WHEEL_WARN_NS = 30 * NS_PER_S;
 
 // ---- options ----
 
@@ -109,10 +112,12 @@ struct SafetyContext {
     bool pulseVerbose = false;
     AlertLeds leds;
     uint64_t epochNs;
+    uint64_t lastPulseNs;      // last accepted wheel pulse (start time until the first one)
+    bool wheelWarned = false;  // "no pulses" warning printed for the current silent stretch
 
     SafetyContext(const SafetyParams& sp, std::unique_ptr<LedBackend> backend,
                   const AlertLedParams& lp, uint64_t epoch)
-        : monitor(sp), leds(std::move(backend), lp), epochNs(epoch)
+        : monitor(sp), leds(std::move(backend), lp), epochNs(epoch), lastPulseNs(epoch)
     {
     }
 
@@ -134,6 +139,13 @@ struct SafetyContext {
                 count = e.lineSeqno - lastSeqno;
             lastSeqno = e.lineSeqno;
             const bool accepted = estimator->addPulse(e.timestampNs, count);
+            if (accepted) {
+                lastPulseNs = std::max(lastPulseNs, e.timestampNs);
+                if (wheelWarned) {
+                    std::printf("Wheel pulses resumed; the two-second rule is active again.\n");
+                    wheelWarned = false;
+                }
+            }
             if (pulseVerbose) {
                 const double t = (e.timestampNs >= epochNs) ? (e.timestampNs - epochNs) * 1e-9 : 0.0;
                 std::printf("[PULSE] t=%.3f s  %s  x%u  interval %.1f ms  instant %.2f m/s  avg %.2f m/s\n",
@@ -149,6 +161,23 @@ struct SafetyContext {
         if (fixedSelfSpeed >= 0.0)
             return fixedSelfSpeed;
         return estimator ? estimator->speedAt(now) : 0.0;
+    }
+
+    // A silent wheel sensor makes the self speed read 0, which turns every
+    // target keeping pace into "not following": the two-second rule is then
+    // silently off while the approach alert still works. Say so, once per
+    // silent stretch, when targets are being tracked meanwhile.
+    void checkWheel(uint64_t now, size_t numTargets)
+    {
+        if (!estimator || wheelWarned || numTargets == 0)
+            return;
+        if (now > lastPulseNs && now - lastPulseNs > WHEEL_WARN_NS) {
+            std::printf("Warning: no wheel pulse for %.0f s while targets are tracked. If the bike is "
+                        "moving, check the wheel sensor: with self speed 0 the two-second rule "
+                        "cannot fire (the approach alert still can).\n",
+                        (now - lastPulseNs) * 1e-9);
+            wheelWarned = true;
+        }
     }
 };
 
@@ -370,6 +399,7 @@ void handleFrame(const Frame& frame, Stats& stats, SafetyContext* ctx, uint64_t 
     reportFrame(frame, stats, &a);
     ctx->leds.onFrame(now, a.anyGapViolation, a.anyApproachAlert);
     ctx->leds.update(now);
+    ctx->checkWheel(now, frame.haveTargetList ? frame.targets.size() : 0);
 }
 
 // ---- modes ----
@@ -453,7 +483,7 @@ int runSerial(const PiOptions& opt)
             SerialPort cliPort;
             if (!cliPort.open(opt.cliDev, 115200))
                 return 1;
-            if (!loadCfg(cliPort, cfgLines))
+            if (!loadCfg(cliPort, cfgLines, &g_run))
                 return 1;
         }
         if (ctx)
@@ -463,6 +493,7 @@ int runSerial(const PiOptions& opt)
     std::printf("Watching for targets on %s. Press Ctrl-C to stop.\n", opt.dataDev.c_str());
     std::fflush(stdout);
 
+    int exitCode = 0;
     Stats stats;
     std::vector<uint8_t> buf;
     buf.reserve(BYTES_BUFFER_MAX_SIZE);
@@ -475,6 +506,14 @@ int runSerial(const PiOptions& opt)
         }
 
         const int n = port.readBytes(chunk, sizeof(chunk));
+        if (n < 0) {
+            // the port is gone (EVM unplugged or reset): stop rather than idle
+            // forever on a dead descriptor, so a supervisor can restart us
+            std::fprintf(stderr, "Error: reading %s failed (%s). Device disconnected? Exiting.\n",
+                         opt.dataDev.c_str(), std::strerror(errno));
+            exitCode = 1;
+            break;
+        }
         if (n > 0)
             buf.insert(buf.end(), chunk, chunk + n);
 
@@ -493,7 +532,7 @@ int runSerial(const PiOptions& opt)
     if (ctx)
         ctx->leds.allOff(monotonicNowNs());
     printSummary(stats, ctx.get());
-    return 0;
+    return exitCode;
 }
 
 // ---- command line ----
@@ -533,7 +572,8 @@ void printUsage(const char* prog)
         "  --gpiochip <path>           use this chip with offset = BCM number (default: auto)\n"
         "  --sim-gpio                  print LED transitions instead of driving pins\n"
         "  --alert-hold <s>            keep an alert LED on this long after the last\n"
-        "                              triggering frame (default 1.0)\n"
+        "                              triggering frame (default 1.0; 0 = only until\n"
+        "                              the next frame)\n"
         "  --flash-hz <n>              approach LED flash rate (default 8)\n"
         "  --frame-timeout <s>         LEDs off when no radar frame arrives for this long\n"
         "                              (default 1.0)\n"
@@ -748,8 +788,7 @@ bool parseArgs(int argc, char** argv, PiOptions& opt, int& exitCode)
                                  "safety monitor).\n", monitorFlagSeen.c_str());
             return false;
         }
-        if (opt.playbackFps > 0)
-            std::printf("Note: --playback-fps only affects the safety monitor's LED timing; ignoring.\n");
+        // --playback-fps paces the file replay with or without the monitor
         return true;
     }
 

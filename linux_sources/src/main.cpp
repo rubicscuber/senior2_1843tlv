@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -222,6 +224,20 @@ struct Options {
     bool realTime = false;
 };
 
+// strtod with full validation: rejects trailing junk, overflow and non-finite
+// values instead of throwing (std::stod would abort the program on "abc")
+bool parseDouble(const char* flag, const char* text, double& out)
+{
+    char* end = nullptr;
+    errno = 0;
+    out = std::strtod(text, &end);
+    if (end == text || *end != '\0' || errno != 0 || !std::isfinite(out)) {
+        std::fprintf(stderr, "Error: %s expects a number, got '%s'\n", flag, text);
+        return false;
+    }
+    return true;
+}
+
 bool parseLanes(const std::string& arg, Lanes& lanes)
 {
     double n = 0;
@@ -265,14 +281,11 @@ bool parseArgs(int argc, char** argv, Options& opt)
             if (!(v = need(i))) return false;
             opt.recordFile = v;
         } else if (a == "--height") {
-            if (!(v = need(i))) return false;
-            opt.offset.height = std::stod(v);
+            if (!(v = need(i)) || !parseDouble("--height", v, opt.offset.height)) return false;
         } else if (a == "--az") {
-            if (!(v = need(i))) return false;
-            opt.offset.az = std::stod(v);
+            if (!(v = need(i)) || !parseDouble("--az", v, opt.offset.az)) return false;
         } else if (a == "--el") {
-            if (!(v = need(i))) return false;
-            opt.offset.el = std::stod(v);
+            if (!(v = need(i)) || !parseDouble("--el", v, opt.offset.el)) return false;
         } else if (a == "--lanes") {
             if (!(v = need(i))) return false;
             if (!parseLanes(v, opt.lanes)) {
@@ -290,8 +303,7 @@ bool parseArgs(int argc, char** argv, Options& opt)
                 return false;
             }
         } else if (a == "--fps") {
-            if (!(v = need(i))) return false;
-            opt.maxFps = std::stod(v);
+            if (!(v = need(i)) || !parseDouble("--fps", v, opt.maxFps)) return false;
             if (!(opt.maxFps > 0)) {
                 std::fprintf(stderr, "Error: --fps must be greater than 0\n");
                 return false;
@@ -402,7 +414,7 @@ int main(int argc, char** argv)
             }
         }
 
-        if (loadConfig && !loadCfg(cfgPort, cfgLines))
+        if (loadConfig && !loadCfg(cfgPort, cfgLines, &g_run))
             return 1;
 
         if (!opt.recordFile.empty()) {
@@ -460,6 +472,7 @@ int main(int argc, char** argv)
     bool havePending = false;
     int pendingBacklog = 0;
     unsigned long invalidFrames = 0;
+    int portErrno = 0; // set when the data port fails (device unplugged)
 
     while (g_run) {
         // keyboard (replaces the view popup, play control and frame slider)
@@ -494,7 +507,12 @@ int main(int argc, char** argv)
                 const size_t room =
                     std::min(sizeof(chunk), BYTES_BUFFER_MAX_SIZE - bytesBuffer.size());
                 const int n = dataPort.readBytes(chunk, room);
-                if (n <= 0)
+                if (n < 0) {
+                    portErrno = errno;
+                    g_run = false; // dead descriptor: stop instead of idling forever
+                    break;
+                }
+                if (n == 0)
                     break;
                 readAny = true;
                 bytesBuffer.insert(bytesBuffer.end(), chunk, chunk + n);
@@ -564,6 +582,12 @@ int main(int argc, char** argv)
     }
     dataPort.close();
     cfgPort.close();
+    if (portErrno != 0) {
+        std::fprintf(stderr, "\nError: reading %s failed (%s). Device disconnected?\n",
+                     opt.dataDev.c_str(), std::strerror(portErrno));
+        std::printf("\nVisualizer terminated.\n");
+        return 1;
+    }
     std::printf("\nVisualizer terminated.\n");
     return 0;
 }

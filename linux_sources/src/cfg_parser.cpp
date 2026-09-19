@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -148,8 +149,20 @@ CliConfig parseCliCommands(const std::vector<std::string>& lines)
         }
         std::vector<double> values;
         values.reserve(tokens.size() - 1);
-        for (size_t i = 1; i < tokens.size(); i++)
-            values.push_back(std::stod(tokens[i]));
+        bool numeric = true;
+        for (size_t i = 1; i < tokens.size() && numeric; i++) {
+            // strtod rather than std::stod: a malformed token must not throw
+            const char* text = tokens[i].c_str();
+            char* end = nullptr;
+            const double v = std::strtod(text, &end);
+            numeric = (end != text && *end == '\0');
+            values.push_back(v);
+        }
+        if (!numeric) {
+            std::printf("Error: non-numeric parameter in %s command; skipping it\n",
+                        command.c_str());
+            continue;
+        }
         cfg.params[command].push_back(std::move(values));
     }
     return cfg;

@@ -17,6 +17,10 @@ constexpr uint32_t UART_MSG_TRACKERPROC_DETECTED_POINTS = 1000;
 constexpr uint32_t UART_MSG_TRACKERPROC_TARGET_LIST = 1010;
 constexpr uint32_t UART_MSG_TRACKERPROC_TARGET_INDEX = 1011;
 
+// frame header: magic word + 8 uint32 fields (getGtrackFrameHeader.m)
+constexpr size_t HEADER_LEN = 8 + 8 * 4;
+constexpr size_t PACKET_LENGTH_OFFSET = 12;
+
 bool g_quiet = false;
 
 void diag(const char* fmt, ...)
@@ -58,7 +62,6 @@ std::vector<size_t> findMagicWords(const std::vector<uint8_t>& buf)
 // number of header bytes consumed, or 0 if the packet is too short.
 size_t parseHeader(const uint8_t* pkt, size_t pktLen, FrameHeader& hdr, bool& valid)
 {
-    constexpr size_t HEADER_LEN = 8 + 8 * 4;
     valid = false;
     if (pktLen < HEADER_LEN) {
         diag("Issue with frame. Skipping. Cannot parse header. Missing bytes.\n");
@@ -66,7 +69,7 @@ size_t parseHeader(const uint8_t* pkt, size_t pktLen, FrameHeader& hdr, bool& va
     }
     std::memcpy(hdr.magicWord, pkt, 8);
     hdr.version        = readU32(pkt + 8);
-    hdr.packetLength   = readU32(pkt + 12);
+    hdr.packetLength   = readU32(pkt + PACKET_LENGTH_OFFSET);
     hdr.platform       = readU32(pkt + 16);
     hdr.frameNumber    = readU32(pkt + 20);
     hdr.timestamp      = readU32(pkt + 24);
@@ -172,10 +175,27 @@ std::vector<Frame> parseBytesTM(std::vector<uint8_t>& buffer, ReadMode mode,
 {
     std::vector<Frame> frames;
     const std::vector<size_t> magicIdx = findMagicWords(buffer);
-    // a frame is complete only when the next frame's magic word has arrived
-    numFramesAvailable = static_cast<int>(magicIdx.size()) - 1;
-    if (numFramesAvailable <= 0) {
-        numFramesAvailable = 0;
+
+    // Frame n spans [magicIdx[n], ends[n]). A frame ends where the next magic
+    // word starts; the trailing frame, which has no next magic word yet, is
+    // complete as soon as the packetLength bytes announced by its own header
+    // have arrived, so live mode does not wait one frame period for the next
+    // frame before it can react. A trailing frame whose header claims more
+    // bytes than are present (or an implausible length) stays incomplete
+    // until the next magic word resolves it, as before.
+    std::vector<size_t> ends;
+    if (!magicIdx.empty()) {
+        ends.assign(magicIdx.begin() + 1, magicIdx.end());
+        const size_t start = magicIdx.back();
+        const size_t avail = buffer.size() - start;
+        if (avail >= HEADER_LEN) {
+            const uint32_t packetLength = readU32(buffer.data() + start + PACKET_LENGTH_OFFSET);
+            if (packetLength >= HEADER_LEN && packetLength <= avail)
+                ends.push_back(start + packetLength);
+        }
+    }
+    numFramesAvailable = static_cast<int>(ends.size());
+    if (numFramesAvailable == 0) {
         // No complete frame. If the buffer has nevertheless reached its limit
         // (a stream without frame starts, or a corrupt oversized frame), drop
         // the dead bytes so the caller can keep reading instead of stalling
@@ -194,16 +214,14 @@ std::vector<Frame> parseBytesTM(std::vector<uint8_t>& buffer, ReadMode mode,
         return frames;
     }
 
-    const size_t numToParse =
-        (mode == ReadMode::FIFO) ? 1 : static_cast<size_t>(numFramesAvailable);
+    const size_t numToParse = (mode == ReadMode::FIFO) ? 1 : ends.size();
     for (size_t n = 0; n < numToParse; n++) {
         const size_t start = magicIdx[n];
-        const size_t end = magicIdx[n + 1];
-        frames.push_back(parseFramePacket(buffer.data() + start, end - start));
+        frames.push_back(parseFramePacket(buffer.data() + start, ends[n] - start));
     }
 
-    // keep unconsumed bytes (the trailing, still-incomplete frame)
-    buffer.erase(buffer.begin(), buffer.begin() + magicIdx[numToParse]);
+    // keep unconsumed bytes (later frames and the still-incomplete trailing one)
+    buffer.erase(buffer.begin(), buffer.begin() + ends[numToParse - 1]);
     if (buffer.size() >= BYTES_BUFFER_MAX_SIZE) {
         diag("Discarding %zu buffered bytes: oversized partial frame.\n", buffer.size());
         buffer.clear();

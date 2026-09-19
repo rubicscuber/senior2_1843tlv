@@ -13,6 +13,7 @@
 // Builds as its own executable; see the Makefile's `console_only` target.
 
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -197,7 +198,7 @@ int runSerial(const std::string& device, const std::string& cliDevice,
             SerialPort cliPort;
             if (!cliPort.open(cliDevice, 115200))
                 return 1;
-            if (!loadCfg(cliPort, cfgLines))
+            if (!loadCfg(cliPort, cfgLines, &g_run))
                 return 1;
         }
     }
@@ -205,11 +206,18 @@ int runSerial(const std::string& device, const std::string& cliDevice,
     std::printf("Dumping raw TLV packets from %s. Press Ctrl-C to stop.\n",
                 device.c_str());
 
+    int exitCode = 0;
     std::vector<uint8_t> buf;
     size_t streamOffset = 0;
     uint8_t chunk[4096];
     while (g_run) {
         const int n = port.readBytes(chunk, sizeof(chunk));
+        if (n < 0) {
+            std::fprintf(stderr, "Error: reading %s failed (%s). Device disconnected? Exiting.\n",
+                         device.c_str(), std::strerror(errno));
+            exitCode = 1;
+            break;
+        }
         if (n > 0) {
             buf.insert(buf.end(), chunk, chunk + n);
             const size_t keepFrom = dumpBuffer(buf, streamOffset, false);
@@ -233,7 +241,7 @@ int runSerial(const std::string& device, const std::string& cliDevice,
     // dump whatever is left of the frame in progress
     if (!buf.empty())
         dumpBuffer(buf, streamOffset, true);
-    return 0;
+    return exitCode;
 }
 
 void printUsage(const char* prog)

@@ -17,7 +17,7 @@ This produces three executables: `tm_visualizer` (the visualizer),
 `console_only` (a raw packet dumper) and `console_only_Pi` (a target
 detection reporter and rider safety monitor for headless/Raspberry Pi use).
 `make clean` removes them and the `build/` directory; `make selftest` runs the
-built-in logic tests of the safety monitor. On a Raspberry Pi see
+built-in logic tests of the safety monitor and the frame parser. On a Raspberry Pi see
 *Requirements on Debian 13 (trixie) 64-bit* below.
 
 ## Running
@@ -176,9 +176,21 @@ radar):
 | self speed | pulse periods averaged over one wheel revolution; `pi * diameter / pulsesPerRev` per pulse |
 
 An alert LED stays on for `--alert-hold` (1 s) after the last frame that
-triggered it, so a track dropping out for a frame does not flicker it, and
-both LEDs go off when no radar frame arrives for `--frame-timeout` (1 s) or
-when the program exits.
+triggered it, so a track dropping out for a frame does not flicker it (and
+always at least until the next frame, so `--alert-hold 0` means "only while
+the alert is present"). Both LEDs go off when no radar frame arrives for
+`--frame-timeout` (1 s) or when the program exits. A frame is processed as
+soon as its own bytes have arrived, so an alert reacts within the frame
+period rather than one frame later.
+
+If the wheel sensor goes silent for 30 s while targets are being tracked, a
+warning is printed: with a self speed of 0 every target keeping pace counts
+as "not following", so the two-second rule cannot fire until pulses resume
+(the approach alert, which only needs the closing speed, keeps working).
+
+If the data port fails (EVM unplugged or reset), the program turns the LEDs
+off, prints the summary and exits with status 1 instead of waiting forever,
+so the boot service below restarts it and waits for the ports to reappear.
 
 Options (all speeds in m/s):
 
@@ -198,8 +210,8 @@ Options (all speeds in m/s):
 | `--led-active-low` | off | LEDs light when the pin is driven low |
 | `--gpiochip <path>` | auto | use this chip with offset = BCM number instead of looking the pin up by name |
 | `--sim-gpio` | off | print `[LED] gap ON  t=...` transitions instead of driving pins |
-| `--alert-hold <s>`, `--flash-hz <n>`, `--frame-timeout <s>` | 1.0, 8, 1.0 | LED timing |
-| `--playback-fps <n>` | 0 | recorded files: replay in real time at this rate (LED bench test); 0 = as fast as possible |
+| `--alert-hold <s>`, `--flash-hz <n>`, `--frame-timeout <s>` | 1.0, 8, 1.0 | LED timing (hold 0 = only until the next frame) |
+| `--playback-fps <n>` | 0 | recorded files: replay in real time at this rate (with or without the monitor; LED bench test); 0 = as fast as possible |
 | `--pulse-verbose` | off | print every wheel pulse with its interval and speed |
 | `--self-test` | | run the built-in logic tests (`make selftest`) and exit |
 

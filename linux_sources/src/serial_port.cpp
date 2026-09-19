@@ -5,10 +5,13 @@
 #include <cstring>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
+
+#include "mono_clock.h"
 
 namespace {
 
@@ -116,7 +119,23 @@ int SerialPort::readBytes(uint8_t* buf, size_t maxLen)
     if (fd_ < 0 || maxLen == 0)
         return 0;
     const ssize_t n = ::read(fd_, buf, maxLen);
-    return (n > 0) ? static_cast<int>(n) : 0;
+    if (n > 0)
+        return static_cast<int>(n);
+    if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+        return -1; // hard error, e.g. ENXIO/EIO
+
+    // Nothing was read: either the line is idle or the device is gone. With
+    // VMIN = VTIME = 0 the kernel returns 0 in both cases (a hung-up tty, e.g.
+    // an unplugged USB device, reads 0 forever rather than failing), so ask
+    // poll(): a hung-up line reports POLLHUP/POLLERR, an idle one nothing.
+    pollfd p{};
+    p.fd = fd_;
+    p.events = POLLIN;
+    if (::poll(&p, 1, 0) > 0 && (p.revents & (POLLHUP | POLLERR | POLLNVAL))) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
 }
 
 bool SerialPort::writeLine(const std::string& line)
@@ -143,6 +162,8 @@ std::string SerialPort::readLine(int timeoutMs)
     std::string line;
     if (fd_ < 0)
         return line;
+    // the timeout bounds the whole line, not each byte
+    const uint64_t deadline = monotonicNowNs() + static_cast<uint64_t>(timeoutMs) * 1000000ull;
     while (true) {
         char c;
         const ssize_t n = ::read(fd_, &c, 1);
@@ -153,23 +174,37 @@ std::string SerialPort::readLine(int timeoutMs)
                 line.push_back(c);
             continue;
         }
-        // no byte available: wait for one within the remaining timeout
+        if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+            return line; // port error: return what we have
+        // no byte available: wait for one within the remaining time
+        const uint64_t now = monotonicNowNs();
+        if (now >= deadline)
+            return line;
+        const uint64_t remainingUs = (deadline - now) / 1000;
         fd_set readSet;
         FD_ZERO(&readSet);
         FD_SET(fd_, &readSet);
         timeval tv{};
-        tv.tv_sec = timeoutMs / 1000;
-        tv.tv_usec = (timeoutMs % 1000) * 1000;
+        tv.tv_sec = static_cast<time_t>(remainingUs / 1000000);
+        tv.tv_usec = static_cast<suseconds_t>(remainingUs % 1000000);
         const int ready = select(fd_ + 1, &readSet, nullptr, nullptr, &tv);
+        if (ready < 0 && errno == EINTR)
+            continue; // a signal: let the caller's stop flag decide, keep the deadline
         if (ready <= 0)
             return line; // timeout or error: return what we have
     }
 }
 
-bool loadCfg(SerialPort& cfgPort, const std::vector<std::string>& cfgLines)
+bool loadCfg(SerialPort& cfgPort, const std::vector<std::string>& cfgLines,
+             const std::atomic<bool>* keepRunning)
 {
+    const auto stopped = [keepRunning]() { return keepRunning && !keepRunning->load(); };
     std::printf("Sending cfg file to device...\n");
     for (const auto& line : cfgLines) {
+        if (stopped()) {
+            std::printf("Configuration interrupted.\n");
+            return false;
+        }
         // skip empty (whitespace-only) lines and comments
         const size_t firstNonSpace = line.find_first_not_of(" \t");
         if (firstNonSpace == std::string::npos)
@@ -183,7 +218,7 @@ bool loadCfg(SerialPort& cfgPort, const std::vector<std::string>& cfgLines)
         }
         std::printf("%s\n", line.c_str());
 
-        for (int k = 0; k < 3; k++) {
+        for (int k = 0; k < 3 && !stopped(); k++) {
             const std::string response = cfgPort.readLine(1000);
             if (response == "Done") {
                 std::printf("%s\n", response.c_str());

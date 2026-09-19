@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "alert_leds.h"
+#include "frame_parser.h"
 #include "safety_monitor.h"
 #include "tm_types.h"
 #include "wheel_speed.h"
@@ -227,6 +228,92 @@ void testLeds()
           "leds: allOff emits a transition only for the lit LED");
     off.update(20 * MS);
     check(!off.gapLedOn() && rec3->events.size() == 2, "leds: allOff clears pending alerts");
+
+    // a hold shorter than the frame period (here 0) must neither blank nor
+    // flicker an LED: the alert stays on until the next frame replaces it
+    AlertLedParams noHold = lp;
+    noHold.holdSeconds = 0.0;
+    AlertLeds hold0(std::make_unique<RecordingBackend>(), noHold);
+    hold0.onFrame(0, true, true);
+    hold0.update(0);
+    check(hold0.gapLedOn() && hold0.speedLedOn(), "leds: hold 0 still lights the LEDs on the alerting frame");
+    hold0.update(30 * MS);
+    check(hold0.gapLedOn() && hold0.approachActive(), "leds: hold 0 keeps the alert until the next frame");
+    hold0.onFrame(50 * MS, false, false);
+    hold0.update(50 * MS);
+    check(!hold0.gapLedOn() && !hold0.speedLedOn(), "leds: hold 0 clears on the next frame without alerts");
+}
+
+// ---- frame parser: frames complete on the next magic word or on packetLength ----
+
+void putU32(std::vector<uint8_t>& b, uint32_t v)
+{
+    for (int i = 0; i < 4; i++)
+        b.push_back(static_cast<uint8_t>(v >> (8 * i)));
+}
+
+// a frame with no TLVs: 40-byte header only, packetLength = 40 + padding
+std::vector<uint8_t> makeFrame(uint32_t frameNumber, uint32_t padding = 0)
+{
+    std::vector<uint8_t> b = {2, 1, 4, 3, 6, 5, 8, 7};
+    putU32(b, 0x03030000);         // version
+    putU32(b, 40 + padding);       // packetLength
+    putU32(b, 0xA1843);            // platform
+    putU32(b, frameNumber);
+    putU32(b, 0);                  // timestamp
+    putU32(b, 0);                  // numDetectedObj
+    putU32(b, 0);                  // numTLVs
+    putU32(b, 0);                  // subFrameNumber
+    b.insert(b.end(), padding, 0);
+    return b;
+}
+
+void testParser()
+{
+    std::printf("-- frame parser\n");
+    int avail = 0;
+
+    std::vector<uint8_t> buf = makeFrame(1);
+    std::vector<Frame> frames = parseBytesTM(buf, ReadMode::FIFO, avail);
+    check(frames.size() == 1 && frames[0].valid && frames[0].header.frameNumber == 1 && buf.empty(),
+          "parser: a lone frame completes on its packetLength (no next magic word needed)");
+
+    buf = makeFrame(2, 16);
+    buf.pop_back(); // one byte short
+    frames = parseBytesTM(buf, ReadMode::FIFO, avail);
+    check(frames.empty() && avail == 0 && buf.size() == 55,
+          "parser: a frame missing its last byte waits");
+    buf.push_back(0);
+    frames = parseBytesTM(buf, ReadMode::FIFO, avail);
+    check(frames.size() == 1 && frames[0].valid && frames[0].header.frameNumber == 2 && buf.empty(),
+          "parser: ...and completes once the byte arrives");
+
+    // two frames plus the first half of a third: FIFO yields one at a time
+    buf = makeFrame(3);
+    const std::vector<uint8_t> f4 = makeFrame(4, 8);
+    buf.insert(buf.end(), f4.begin(), f4.end());
+    buf.insert(buf.end(), {2, 1, 4, 3});
+    frames = parseBytesTM(buf, ReadMode::FIFO, avail);
+    check(avail == 2 && frames.size() == 1 && frames[0].header.frameNumber == 3,
+          "parser: FIFO returns the oldest of two complete frames");
+    frames = parseBytesTM(buf, ReadMode::FIFO, avail);
+    check(avail == 1 && frames.size() == 1 && frames[0].header.frameNumber == 4 && buf.size() == 4,
+          "parser: the partial trailing frame is kept in the buffer");
+
+    // a header claiming more bytes than exist stays pending until the next
+    // magic word bounds it (then it is reported as a bad frame, as before)
+    buf = makeFrame(5);
+    buf[12] = 0xFF; // packetLength becomes 255: more than the 40 bytes present
+    const std::vector<uint8_t> f6 = makeFrame(6);
+    frames = parseBytesTM(buf, ReadMode::FIFO, avail);
+    check(frames.empty() && buf.size() == 40, "parser: implausible packetLength waits for the next frame");
+    buf.insert(buf.end(), f6.begin(), f6.end());
+    setFrameParserQuiet(true);
+    frames = parseBytesTM(buf, ReadMode::ALL, avail);
+    setFrameParserQuiet(false);
+    check(avail == 2 && frames.size() == 2 && !frames[0].valid && frames[1].valid
+              && frames[1].header.frameNumber == 6 && buf.empty(),
+          "parser: bad length frame is invalid, the following one parses");
 }
 
 } // namespace
@@ -237,6 +324,7 @@ int runPiSelfTests()
     testWheel();
     testSafety();
     testLeds();
+    testParser();
     if (g_failures == 0)
         std::printf("All self-tests passed.\n");
     else

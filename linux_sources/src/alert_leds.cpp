@@ -58,6 +58,11 @@ void AlertLeds::onFrame(uint64_t nowNs, bool gapViolation, bool approachAlert)
 {
     lastFrame_ = nowNs;
     haveFrame_ = true;
+    // the latest frame's own flags keep an alert active until the next frame
+    // replaces them, whatever the hold time (so a hold shorter than the frame
+    // period, including 0, cannot blank or flicker the LEDs)
+    gapInFrame_ = gapViolation;
+    approachInFrame_ = approachAlert;
     if (gapViolation)
         gapUntil_ = std::max(gapUntil_, nowNs + holdNs_);
     if (approachAlert)
@@ -68,8 +73,8 @@ void AlertLeds::update(uint64_t nowNs)
 {
     // fail-safe: without recent radar frames no alert can be trusted
     const bool alive = haveFrame_ && nowNs >= lastFrame_ && (nowNs - lastFrame_) <= frameTimeoutNs_;
-    const bool gap = alive && nowNs < gapUntil_;
-    const bool approach = alive && nowNs < approachUntil_;
+    const bool gap = alive && (gapInFrame_ || nowNs < gapUntil_);
+    const bool approach = alive && (approachInFrame_ || nowNs < approachUntil_);
 
     if (approach && !approachActive_)
         flashEpoch_ = nowNs; // flashing always starts with the LED on
@@ -90,6 +95,8 @@ void AlertLeds::allOff(uint64_t nowNs)
 {
     gapUntil_ = 0;
     approachUntil_ = 0;
+    gapInFrame_ = false;
+    approachInFrame_ = false;
     gapActive_ = false;
     approachActive_ = false;
     apply(nowNs, false, false);

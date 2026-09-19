@@ -11,8 +11,9 @@
 
 #include "tm_types.h"
 
-// Frames are only counted once the *next* magic word is seen, so the byte
-// buffer always retains the (possibly incomplete) trailing frame.
+// A frame is complete once the *next* magic word is seen, or, for the last
+// frame in the buffer, once the packetLength bytes announced by its header
+// have all arrived; an incomplete trailing frame is retained in the buffer.
 enum class ReadMode {
     FIFO, // parse only the oldest complete frame (real-time mode)
     ALL   // parse every complete frame (playback mode)

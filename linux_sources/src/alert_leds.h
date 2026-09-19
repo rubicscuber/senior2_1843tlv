@@ -54,6 +54,7 @@ private:
 
 struct AlertLedParams {
     double holdSeconds = 1.0;         // keep an alert LED active this long after the last triggering frame
+                                      // (an alert is always kept at least until the next frame; 0 = only that)
     double flashHz = 8.0;             // speed LED flash rate (<= 0: steady)
     double frameTimeoutSeconds = 1.0; // no valid radar frame for this long -> all LEDs off
 };
@@ -90,6 +91,8 @@ private:
     uint64_t lastFrame_ = 0;
     uint64_t flashEpoch_ = 0;
     bool haveFrame_ = false;
+    bool gapInFrame_ = false;      // flags of the latest frame, valid until the next one
+    bool approachInFrame_ = false;
     bool gapActive_ = false;
     bool approachActive_ = false;
     bool gapLed_ = false;
