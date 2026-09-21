@@ -13,9 +13,10 @@ cd linux_sources
 make
 ```
 
-This produces three executables: `tm_visualizer` (the visualizer),
-`console_only` (a raw packet dumper) and `console_only_Pi` (a target
-detection reporter and rider safety monitor for headless/Raspberry Pi use).
+This produces four executables: `tm_visualizer` (the visualizer),
+`console_only` (a raw packet dumper), `console_only_Pi` (a target
+detection reporter and rider safety monitor for headless/Raspberry Pi use)
+and `wheel_test` (a bench test for the wheel-speed sensor input).
 `make clean` removes them and the `build/` directory; `make selftest` runs the
 built-in logic tests of the safety monitor and the frame parser. On a Raspberry Pi see
 *Requirements on Debian 13 (trixie) 64-bit* below.
@@ -247,6 +248,48 @@ program prints the resolved GPIO lines and the pulse input's idle level at
 start (a low idle level with the default wiring means the magnet is parked at
 the sensor or the wiring is wrong).
 
+### wheel_test: bench-testing the wheel sensor
+
+`wheel_test` runs the self-speed part of the safety monitor on its own, with
+no radar attached: the same GPIO edge-event input, dropped-event accounting
+and `WheelSpeedEstimator` that `console_only_Pi` uses, taking the same wheel
+options so a working command line copies over 1:1. It prints every pulse
+(interval, instantaneous and averaged speed), a status line every 0.5 s with
+the speed, pulse counters, time since the last pulse and the input's level,
+and a summary with the mean reading against the expected speed.
+
+```sh
+# real sensor on GPIO17: spin the wheel or pass the magnet by hand
+./wheel_test --pulse-gpio 17 --wheel-diameter 0.7 --pulses-per-rev 1
+
+# no wheel: drive GPIO27 as a pulse generator equivalent to 10 m/s and jumper
+# it to GPIO17; the reading must settle at 10.00 m/s with 0 rejected pulses
+./wheel_test --pulse-gpio 17 --loopback-gpio 27 --loopback-speed 10 --duration 20
+
+# no hardware at all (any Linux box): synthetic pulses through the estimator
+./wheel_test --sim 10 --duration 5 --quiet-pulses
+
+# generator stops after 4 s: the reading must decay to 0 within --stop-timeout
+./wheel_test --sim 10 --duration 8 --gen-stop-after 4 --quiet-pulses
+```
+
+What to look for on the bench:
+
+- the idle level printed at start is 1 with the default wiring (0 means the
+  magnet is parked at the sensor or the wiring/pull-up is wrong);
+- one accepted pulse per magnet pass, none rejected. Rejected pulses at a
+  steady speed mean contact bounce or a double edge per pass: raise
+  `--pulse-debounce-us`, or lower `--max-speed` to widen the glitch filter;
+- the speed decays to 0 within `--stop-timeout` (2 s) after the wheel stops;
+- in loopback mode the mean reading is within a few percent of the generated
+  speed (the summary prints the error). A large error with the right pulse
+  count points at a wrong `--wheel-diameter` or `--pulses-per-rev`.
+
+Add `--interval`, `--duration` and `--quiet-pulses` to taste; `--help` lists
+everything. `wheel_test` and `console_only_Pi` cannot use the same pin at the
+same time (the kernel reports the line as busy), so stop the boot service
+first: `sudo systemctl stop console_only_pi`.
+
 ### Running console_only_Pi automatically at boot
 
 `startpi_boot.sh` runs the same command as `startpi_console.sh`, hardened
@@ -368,4 +411,5 @@ objects do appear as tracks on a moving platform; the monitor reports them as
 | `src/safety_monitor.*` | closing speed, ground speed, two-second rule and approach alert per target |
 | `src/alert_leds.*` | LED hold/flash/fail-safe state machine with GPIO, console and null backends |
 | `src/pi_selftest.*` | built-in logic tests (`console_only_Pi --self-test`) |
+| `src/wheel_test.cpp` | wheel-speed sensor bench test (`wheel_test` executable) |
 | `src/mono_clock.h` | CLOCK_MONOTONIC helper shared by the modules above |
