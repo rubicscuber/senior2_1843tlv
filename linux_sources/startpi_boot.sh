@@ -43,6 +43,8 @@ PULSE_GPIO="${PULSE_GPIO-17}"                 # BCM pin of the wheel sensor
 LED_GAP_GPIO="${LED_GAP_GPIO-22}"             # BCM pin of the two-second-rule LED; empty = none
 LED_SPEED_GPIO="${LED_SPEED_GPIO-23}"         # BCM pin of the approach-alert LED; empty = none
 CORRIDOR="${CORRIDOR-}"                       # lateral half-width (m) for the gap rule; empty = off
+ALERT_SOUND="${ALERT_SOUND-}"                 # audio file played (3.5 mm jack) during an approach alert; empty = none
+SOUND_PLAYER="${SOUND_PLAYER-}"               # player command for it; empty = console_only_Pi's default (aplay -q)
 EXTRA_ARGS="${EXTRA_ARGS-}"                   # further console_only_Pi options, e.g. "--led-active-low"
 
 LOG_DIR="$SCRIPT_DIR/logs"
@@ -77,6 +79,12 @@ if [ -n "$APPROACH_THRESHOLD" ]; then
     fi
     if [ -n "$CORRIDOR" ]; then
         set -- "$@" --corridor "$CORRIDOR"
+    fi
+    if [ -n "$ALERT_SOUND" ]; then
+        set -- "$@" --alert-sound "$ALERT_SOUND"
+        if [ -n "$SOUND_PLAYER" ]; then
+            set -- "$@" --sound-player "$SOUND_PLAYER"
+        fi
     fi
 fi
 # EXTRA_ARGS is word-split on purpose

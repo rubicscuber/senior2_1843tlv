@@ -10,7 +10,8 @@ BUILDDIR  = build
 
 # Raspberry Pi safety-monitor modules (GPIO, wheel speed, alerts): linked into
 # console_only_Pi (and, partly, wheel_test) only
-PI_SRCS := $(addprefix $(SRCDIR)/,gpio_line.cpp wheel_speed.cpp safety_monitor.cpp alert_leds.cpp pi_selftest.cpp)
+PI_SRCS := $(addprefix $(SRCDIR)/,gpio_line.cpp wheel_speed.cpp safety_monitor.cpp alert_leds.cpp \
+                                  alert_sound.cpp pi_selftest.cpp)
 PI_OBJS := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.o,$(PI_SRCS))
 
 # console_only.cpp, console_only_Pi.cpp and wheel_test.cpp have their own

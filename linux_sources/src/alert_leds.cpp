@@ -78,6 +78,7 @@ void AlertLeds::update(uint64_t nowNs)
 
     if (approach && !approachActive_)
         flashEpoch_ = nowNs; // flashing always starts with the LED on
+    const bool approachChanged = (approach != approachActive_);
     gapActive_ = gap;
     approachActive_ = approach;
 
@@ -89,10 +90,13 @@ void AlertLeds::update(uint64_t nowNs)
             speedOn = (((nowNs - flashEpoch_) / halfPeriodNs_) % 2) == 0;
     }
     apply(nowNs, gap, speedOn);
+    if (approachChanged && listener_)
+        listener_->onApproachAlert(approach, nowNs);
 }
 
 void AlertLeds::allOff(uint64_t nowNs)
 {
+    const bool wasApproach = approachActive_;
     gapUntil_ = 0;
     approachUntil_ = 0;
     gapInFrame_ = false;
@@ -100,6 +104,8 @@ void AlertLeds::allOff(uint64_t nowNs)
     gapActive_ = false;
     approachActive_ = false;
     apply(nowNs, false, false);
+    if (wasApproach && listener_)
+        listener_->onApproachAlert(false, nowNs);
 }
 
 void AlertLeds::apply(uint64_t nowNs, bool gapOn, bool speedOn)

@@ -148,8 +148,10 @@ Frame 3      | no target detected (9 point-cloud detections)
 With `--approach-threshold <m/s>` the reporter becomes a rider warning device
 for a **rear-facing** radar: it derives the vehicle's own ground speed from a
 hall-effect wheel sensor on a GPIO pin (or a fixed `--self-speed`), works out
-each target's closing speed and whether it keeps a two-second gap, and drives
-two LEDs. Without the flag the output is identical to the plain report.
+each target's closing speed and whether it keeps a two-second gap, lights a
+LED on a gap violation and, on a fast approach, plays an audio file out of the
+Pi's 3.5 mm jack (`--alert-sound`) and/or flashes a second LED. Without the
+flag the output is identical to the plain report.
 
 Wiring (BCM numbering; the defaults in `startpi_boot.sh` are 17 / 22 / 23):
 
@@ -173,16 +175,44 @@ radar):
 | target ground speed `v_t` | `max(0, selfSpeed - vy)`: 0 for stationary roadside objects and for traffic moving away |
 | time gap | `r / v_t` (only when `v_t` > 0.5 m/s, i.e. the target is following) |
 | **gap violation** (steady LED) | time gap < `--gap-seconds` (default 2.0), and `abs(x)` <= `--corridor` when one is set |
-| **approach alert** (flashing LED) | `c` > `--approach-threshold` |
+| **approach alert** (audio file and/or flashing LED) | `c` > `--approach-threshold` |
 | self speed | pulse periods averaged over one wheel revolution; `pi * diameter / pulsesPerRev` per pulse |
 
-An alert LED stays on for `--alert-hold` (1 s) after the last frame that
-triggered it, so a track dropping out for a frame does not flicker it (and
-always at least until the next frame, so `--alert-hold 0` means "only while
-the alert is present"). Both LEDs go off when no radar frame arrives for
-`--frame-timeout` (1 s) or when the program exits. A frame is processed as
-soon as its own bytes have arrived, so an alert reacts within the frame
-period rather than one frame later.
+An alert stays active for `--alert-hold` (1 s) after the last frame that
+triggered it, so a track dropping out for a frame does not flicker the LED or
+stutter the audio (and always at least until the next frame, so
+`--alert-hold 0` means "only while the alert is present"). All alerts clear
+when no radar frame arrives for `--frame-timeout` (1 s) or when the program
+exits. A frame is processed as soon as its own bytes have arrived, so an
+alert reacts within the frame period rather than one frame later.
+
+**Approach alert audio.** `--alert-sound <file>` plays the file (WAV is the
+safe choice) through the Pi's 3.5 mm jack for as long as the approach alert
+is active: the player is started when the alert begins, restarted each time
+the file ends while the alert lasts (`--sound-once` plays it a single time
+per alert instead) and stopped the moment the alert ends. The player is a
+separate process (`aplay -q` from alsa-utils by default), so audio never
+delays the radar loop. One-time setup on the Pi:
+
+```sh
+sudo apt install alsa-utils          # aplay (already present on Raspberry Pi OS)
+aplay -l                             # the jack shows up as "bcm2835 Headphones"
+sudo raspi-config                    # System Options > Audio > Headphones
+amixer -c Headphones sset Headphones 90%
+aplay alert.wav                      # must be audible from the jack
+./console_only_Pi capture.dat --self-speed 10 --approach-threshold 2 \
+                  --alert-sound alert.wav --sound-check --playback-fps 20
+```
+
+`--sound-check` plays the file once at start and refuses to run if that
+fails. If `aplay` picks the wrong output (HDMI, a USB sound card), point it
+at the jack explicitly: `--sound-player "aplay -q -D plughw:Headphones"`.
+Other players work the same way as long as they take the file as their last
+argument and exit when the file ends (`mpg123 -q` for MP3, `paplay` on a
+desktop image with PipeWire). The user running the program must be in the
+`audio` group (the default Raspberry Pi OS user is). In unpaced file replay
+the audio is only printed as `[SOUND] start/stop` lines, because the clock
+is synthetic there; use `--playback-fps` to hear it.
 
 If the wheel sensor goes silent for 30 s while targets are being tracked, a
 warning is printed: with a self speed of 0 every target keeping pace counts
@@ -207,7 +237,11 @@ Options (all speeds in m/s):
 | `--pulse-bias pull-up\|pull-down\|none` | pull-up | input bias |
 | `--pulse-debounce-us <n>` | 500 | kernel debounce, 0 = off (with many pulses per revolution use 0 for the most precise timestamps) |
 | `--max-speed <m/s>`, `--stop-timeout <s>` | 40, 2 | glitch filter (faster pulses are ignored) / speed reads 0 after this long without a pulse |
-| `--led-gap-gpio <bcm>`, `--led-speed-gpio <bcm>` | — | LED output pins (steady / flashing) |
+| `--led-gap-gpio <bcm>`, `--led-speed-gpio <bcm>` | — | LED output pins (steady gap LED / flashing approach LED) |
+| `--alert-sound <file>` | — | audio file played out of the 3.5 mm jack while the approach alert is active |
+| `--sound-player <cmd>` | `aplay -q` | player command; the file is appended as the last argument |
+| `--sound-once` | off | play the file once per alert instead of repeating it while the alert lasts |
+| `--sound-check` | off | play the file once at start; exit with an error if that fails |
 | `--led-active-low` | off | LEDs light when the pin is driven low |
 | `--gpiochip <path>` | auto | use this chip with offset = BCM number instead of looking the pin up by name |
 | `--sim-gpio` | off | print `[LED] gap ON  t=...` transitions instead of driving pins |
@@ -224,10 +258,13 @@ Examples:
 # recorded stream, fixed 10 m/s self speed, LED transitions printed:
 ./console_only_Pi capture.dat --self-speed 10 --approach-threshold 2 --corridor 1.75 --sim-gpio
 
-# live: wheel sensor on GPIO17, LEDs on GPIO22 (gap) and GPIO23 (approach)
+# live: wheel sensor on GPIO17, gap LED on GPIO22, approach alert as audio
 ./console_only_Pi -d /dev/ttyACM1 -c /dev/ttyACM0 -g ../chirp_configs/IWR_1843BOOST_bike.cfg \
                   --approach-threshold 2 --pulse-gpio 17 --wheel-diameter 0.7 --pulses-per-rev 1 \
-                  --led-gap-gpio 22 --led-speed-gpio 23
+                  --led-gap-gpio 22 --alert-sound alert.wav
+
+# the same with a flashing LED on GPIO23 as well
+./console_only_Pi ... --led-gap-gpio 22 --led-speed-gpio 23 --alert-sound alert.wav
 ```
 
 Each frame line gains the self speed and each target a third line:
@@ -304,8 +341,9 @@ Settings for the boot run, including the safety monitor, live in
 `startpi_boot.env` next to the script (copy `startpi_boot.env.example`; plain
 `VAR=value` lines): set `APPROACH_THRESHOLD` to enable the monitor and adjust
 `WHEEL_DIAMETER`, `PULSES_PER_REV`, `PULSE_GPIO`, `LED_GAP_GPIO`,
-`LED_SPEED_GPIO`, `CORRIDOR` or `EXTRA_ARGS` as needed (an empty
-`LED_*_GPIO` means no LED on that pin). The script logs the assembled command
+`LED_SPEED_GPIO`, `CORRIDOR`, `ALERT_SOUND`, `SOUND_PLAYER` or `EXTRA_ARGS`
+as needed (an empty `LED_*_GPIO` means no LED on that pin; `ALERT_SOUND` is
+the audio file for the approach alert, given with an absolute path). The script logs the assembled command
 line at start, so `journalctl` shows exactly what ran.
 To have the Pi launch it after every successful boot, install it once as a
 systemd service:
@@ -363,6 +401,13 @@ Needed only for the safety monitor with real GPIO pins (`--pulse-gpio`,
   `/dev/gpiochip0` with offset = BCM number, which is correct on a Pi 3/4, and
   says so. `--gpiochip /dev/gpiochip0` forces that mapping for all pins.
 
+Needed only for the approach alert audio (`--alert-sound`):
+
+- `alsa-utils` for `aplay` (installed by default on Raspberry Pi OS), and
+  membership in the `audio` group for the user running the program (the
+  default Raspberry Pi OS user has it). The 3.5 mm jack needs `dtparam=audio=on`
+  in `/boot/firmware/config.txt`, which is the default.
+
 Optional: `sudo apt install gpiod` for the command-line tools used in the
 bench checks below (libgpiod 2.x syntax as shipped by trixie; the 1.x syntax
 found in older examples does not work). The program itself does not use
@@ -409,7 +454,8 @@ objects do appear as tracks on a moving platform; the monitor reports them as
 | `src/gpio_line.*` | Linux GPIO character device (uAPI v2): edge-event input and output lines, pin lookup by name |
 | `src/wheel_speed.*` | self ground speed from wheel pulses (`WheelSpeedEstimator`) |
 | `src/safety_monitor.*` | closing speed, ground speed, two-second rule and approach alert per target |
-| `src/alert_leds.*` | LED hold/flash/fail-safe state machine with GPIO, console and null backends |
+| `src/alert_leds.*` | alert hold/flash/fail-safe state machine with GPIO, console and null LED backends |
+| `src/alert_sound.*` | approach alert audio: runs a player (`aplay`) as a child process while the alert is active |
 | `src/pi_selftest.*` | built-in logic tests (`console_only_Pi --self-test`) |
 | `src/wheel_test.cpp` | wheel-speed sensor bench test (`wheel_test` executable) |
 | `src/mono_clock.h` | CLOCK_MONOTONIC helper shared by the modules above |

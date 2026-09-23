@@ -39,6 +39,14 @@ private:
     uint64_t epochNs_;
 };
 
+// Receives the approach alert's active/inactive transitions (after hold time
+// and fail-safe are applied), for outputs other than the LED, e.g. audio.
+class ApproachAlertListener {
+public:
+    virtual ~ApproachAlertListener() = default;
+    virtual void onApproachAlert(bool active, uint64_t nowNs) = 0;
+};
+
 // drives real GPIO output lines; a missing line is a no-op
 class GpioLedBackend : public LedBackend {
 public:
@@ -74,6 +82,10 @@ public:
     // Force both LEDs off (exit path) and clear all pending alerts.
     void allOff(uint64_t nowNs);
 
+    // Optional extra output notified when the approach alert starts/ends
+    // (the caller keeps ownership; nullptr = none).
+    void setApproachListener(ApproachAlertListener* l) { listener_ = l; }
+
     bool gapActive() const { return gapActive_; }
     bool approachActive() const { return approachActive_; }
     bool gapLedOn() const { return gapLed_; }
@@ -83,6 +95,7 @@ private:
     void apply(uint64_t nowNs, bool gapOn, bool speedOn);
 
     std::unique_ptr<LedBackend> backend_;
+    ApproachAlertListener* listener_ = nullptr;
     uint64_t holdNs_;
     uint64_t halfPeriodNs_;
     uint64_t frameTimeoutNs_;

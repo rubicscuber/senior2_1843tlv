@@ -16,7 +16,8 @@
 // Safety monitor (rear-facing radar; enabled by --approach-threshold):
 //   self ground speed from a hall-effect wheel sensor on a GPIO input (or a
 //   fixed --self-speed), per-target closing speed and two-second-rule check,
-//   a steady LED on a gap violation and a flashing LED on a fast approach.
+//   a steady LED on a gap violation and, on a fast approach, an audio file
+//   played out of the Pi's 3.5 mm jack (--alert-sound) and/or a flashing LED.
 //   See printUsage() / README for the options. Without --approach-threshold
 //   the program behaves exactly as before.
 //
@@ -41,6 +42,7 @@
 #include <unistd.h>
 
 #include "alert_leds.h"
+#include "alert_sound.h"
 #include "cfg_parser.h"
 #include "frame_parser.h"
 #include "gpio_line.h"
@@ -88,6 +90,8 @@ struct PiOptions {
     bool simGpio = false;
     bool pulseVerbose = false;
     AlertLedParams leds;
+    AlertSoundParams sound;   // approach alert audio; enabled by --alert-sound
+    bool soundCheck = false;  // play the file once at start
     double playbackFps = 0.0;
 };
 
@@ -111,6 +115,7 @@ struct SafetyContext {
     double fixedSelfSpeed = -1.0;
     bool pulseVerbose = false;
     AlertLeds leds;
+    std::unique_ptr<AlertSound> sound; // approach alert audio; null = none
     uint64_t epochNs;
     uint64_t lastPulseNs;      // last accepted wheel pulse (start time until the first one)
     bool wheelWarned = false;  // "no pulses" warning printed for the current silent stretch
@@ -161,6 +166,13 @@ struct SafetyContext {
         if (fixedSelfSpeed >= 0.0)
             return fixedSelfSpeed;
         return estimator ? estimator->speedAt(now) : 0.0;
+    }
+
+    // keeps the audio player child in step with the alert (call every loop)
+    void pollSound(uint64_t now)
+    {
+        if (sound)
+            sound->poll(now);
     }
 
     // A silent wheel sensor makes the self speed read 0, which turns every
@@ -283,6 +295,8 @@ void printSummary(const Stats& stats, const SafetyContext* ctx)
                     ctx->estimator->acceptedPulses(), ctx->estimator->rejectedPulses(),
                     ctx->selfSpeed(monotonicNowNs()));
     }
+    if (ctx->sound)
+        std::printf("Sound: the approach alert started the audio %lu time(s).\n", ctx->sound->starts());
 }
 
 // ---- safety monitor setup ----
@@ -303,8 +317,11 @@ bool openLed(const PiOptions& opt, int bcm, const char* label, std::unique_ptr<G
 }
 
 // Builds the safety context (GPIO lines are opened here, before any serial
-// port, so permission problems fail fast). ctx stays null when the monitor is off.
-bool setupSafety(const PiOptions& opt, uint64_t epochNs, std::unique_ptr<SafetyContext>& ctx)
+// port, so permission problems fail fast). ctx stays null when the monitor is
+// off. simulateSound: print the audio transitions instead of playing (unpaced
+// file replay, where the clock is synthetic).
+bool setupSafety(const PiOptions& opt, uint64_t epochNs, bool simulateSound,
+                 std::unique_ptr<SafetyContext>& ctx)
 {
     if (!opt.monitor)
         return true;
@@ -327,6 +344,32 @@ bool setupSafety(const PiOptions& opt, uint64_t epochNs, std::unique_ptr<SafetyC
 
     ctx = std::make_unique<SafetyContext>(opt.safety, std::move(backend), opt.leds, epochNs);
     ctx->pulseVerbose = opt.pulseVerbose;
+
+    // approach alert audio (checked before the serial ports, like the GPIO lines)
+    std::string soundMode = "none";
+    if (!opt.sound.file.empty()) {
+        AlertSoundParams sp = opt.sound;
+        sp.simulate = simulateSound;
+        ctx->sound = std::make_unique<AlertSound>(sp, epochNs);
+        std::string err;
+        if (!ctx->sound->check(err)) {
+            std::fprintf(stderr, "Error: --alert-sound: %s\n", err.c_str());
+            return false;
+        }
+        if (opt.soundCheck) {
+            std::printf("Sound check: playing %s once...\n", sp.file.c_str());
+            std::fflush(stdout);
+            if (!ctx->sound->playOnce(30.0)) {
+                std::fprintf(stderr, "Error: the sound check failed: '%s' could not play %s. "
+                                     "Check the audio device (aplay -l) and --sound-player.\n",
+                             sp.player.c_str(), sp.file.c_str());
+                return false;
+            }
+        }
+        ctx->leds.setApproachListener(ctx->sound.get());
+        soundMode = sp.file + (sp.simulate ? " (simulated: printed to console)" : " via '" + sp.player + "'")
+                    + (sp.repeat ? ", repeated while active" : ", once per alert");
+    }
 
     std::string speedSource;
     if (opt.selfSpeed >= 0.0) {
@@ -362,12 +405,14 @@ bool setupSafety(const PiOptions& opt, uint64_t epochNs, std::unique_ptr<SafetyC
 
     const SafetyParams& sp = opt.safety;
     std::printf("Safety monitor: rear-facing radar; two-second rule %.1f s; approach alert above "
-                "%.2f m/s; corridor %s; alert hold %.1f s; flash %.1f Hz; LEDs: %s; self speed: %s\n",
+                "%.2f m/s; corridor %s; alert hold %.1f s; flash %.1f Hz; LEDs: %s; approach sound: %s; "
+                "self speed: %s\n",
                 sp.gapSeconds, sp.approachThresholdMps,
                 sp.corridorHalfWidthM > 0
                     ? ("+/-" + std::to_string(sp.corridorHalfWidthM).substr(0, 5) + " m").c_str()
                     : "off",
-                opt.leds.holdSeconds, opt.leds.flashHz, ledMode.c_str(), speedSource.c_str());
+                opt.leds.holdSeconds, opt.leds.flashHz, ledMode.c_str(), soundMode.c_str(),
+                speedSource.c_str());
     return true;
 }
 
@@ -407,8 +452,12 @@ void handleFrame(const Frame& frame, Stats& stats, SafetyContext* ctx, uint64_t 
 int runFile(const PiOptions& opt)
 {
     const uint64_t epoch = monotonicNowNs();
+    // unpaced: a synthetic 50 ms clock keeps alert timing deterministic (and
+    // the audio is only printed); paced (--playback-fps): real time, so LEDs
+    // and sound behave as on a live run
+    const bool paced = opt.playbackFps > 0.0;
     std::unique_ptr<SafetyContext> ctx;
-    if (!setupSafety(opt, epoch, ctx))
+    if (!setupSafety(opt, epoch, !paced, ctx))
         return 1;
 
     std::vector<uint8_t> buf;
@@ -425,9 +474,6 @@ int runFile(const PiOptions& opt)
         return 1;
     }
 
-    // unpaced: a synthetic 50 ms clock keeps alert timing deterministic;
-    // paced (--playback-fps): real time, so LEDs behave as on a live run
-    const bool paced = opt.playbackFps > 0.0;
     const uint64_t frameNs = paced ? static_cast<uint64_t>(NS_PER_S / opt.playbackFps)
                                    : SYNTHETIC_FRAME_NS;
     uint64_t nextNs = epoch;
@@ -441,8 +487,11 @@ int runFile(const PiOptions& opt)
         if (paced) {
             nextNs += frameNs;
             while (g_run && monotonicNowNs() < nextNs) {
-                if (ctx)
-                    ctx->leds.update(monotonicNowNs());
+                if (ctx) {
+                    const uint64_t t = monotonicNowNs();
+                    ctx->leds.update(t);
+                    ctx->pollSound(t);
+                }
                 usleep(5000);
             }
             if (ctx)
@@ -459,7 +508,7 @@ int runSerial(const PiOptions& opt)
 {
     const uint64_t epoch = monotonicNowNs();
     std::unique_ptr<SafetyContext> ctx;
-    if (!setupSafety(opt, epoch, ctx))
+    if (!setupSafety(opt, epoch, false, ctx))
         return 1;
 
     SerialPort port;
@@ -503,6 +552,7 @@ int runSerial(const PiOptions& opt)
         if (ctx) {
             ctx->pollPulses(now);
             ctx->leds.update(now); // hold timers, fail-safe and flashing run between frames
+            ctx->pollSound(now);   // restart/stop the audio player as the alert changes
         }
 
         const int n = port.readBytes(chunk, sizeof(chunk));
@@ -567,7 +617,14 @@ void printUsage(const char* prog)
         "  --max-speed <m/s>           glitch filter: faster pulses are ignored (default 40)\n"
         "  --stop-timeout <s>          speed reads 0 after this long without a pulse (default 2)\n"
         "  --led-gap-gpio <bcm>        steady LED output for two-second-rule violations\n"
-        "  --led-speed-gpio <bcm>      flashing LED output for approach alerts\n"
+        "  --alert-sound <file>        approach alert: play this audio file (e.g. WAV) out of\n"
+        "                              the audio jack while the alert is active\n"
+        "  --sound-player <cmd>        player command, the file is appended (default \"aplay -q\";\n"
+        "                              e.g. \"aplay -q -D plughw:Headphones\")\n"
+        "  --sound-once                play the file once per alert instead of repeating it\n"
+        "  --sound-check               play the file once at start to verify the audio path\n"
+        "  --led-speed-gpio <bcm>      flashing LED output for approach alerts (can be used\n"
+        "                              together with --alert-sound)\n"
         "  --led-active-low            LEDs light when the pin is driven low\n"
         "  --gpiochip <path>           use this chip with offset = BCM number (default: auto)\n"
         "  --sim-gpio                  print LED transitions instead of driving pins\n"
@@ -583,7 +640,9 @@ void printUsage(const char* prog)
         "  --self-test                 run the built-in logic tests and exit\n"
         "\n"
         "Wiring: hall switch output -> pulse GPIO (internal pull-up), GND common;\n"
-        "LED anode -> 330 ohm -> LED GPIO, cathode -> GND (active-high).\n",
+        "LED anode -> 330 ohm -> LED GPIO, cathode -> GND (active-high).\n"
+        "Audio: route the Pi's output to the 3.5 mm jack (raspi-config > Audio, or\n"
+        "--sound-player with -D <device> from 'aplay -l'); test with --sound-check.\n",
         prog, prog);
 }
 
@@ -722,6 +781,20 @@ bool parseArgs(int argc, char** argv, PiOptions& opt, int& exitCode)
             if (!(v = need(i)) || !parseInt("--led-speed-gpio", v, n)) return false;
             opt.ledSpeedGpio = n;
             monitorFlag(a);
+        } else if (a == "--alert-sound") {
+            if (!(v = need(i))) return false;
+            opt.sound.file = v;
+            monitorFlag(a);
+        } else if (a == "--sound-player") {
+            if (!(v = need(i))) return false;
+            opt.sound.player = v;
+            monitorFlag(a);
+        } else if (a == "--sound-once") {
+            opt.sound.repeat = false;
+            monitorFlag(a);
+        } else if (a == "--sound-check") {
+            opt.soundCheck = true;
+            monitorFlag(a);
         } else if (a == "--led-active-low") {
             opt.ledActiveLow = true;
             monitorFlag(a);
@@ -832,6 +905,12 @@ bool parseArgs(int argc, char** argv, PiOptions& opt, int& exitCode)
     }
     if (opt.ledActiveLow && opt.ledGapGpio < 0 && opt.ledSpeedGpio < 0)
         std::printf("Note: --led-active-low has no effect without LED pins.\n");
+    if (opt.sound.file.empty() && (opt.soundCheck || !opt.sound.repeat || opt.sound.player != "aplay -q"))
+        std::printf("Note: --sound-player/--sound-once/--sound-check have no effect without --alert-sound.\n");
+    if (!opt.sound.file.empty() && opt.sound.player.find_first_not_of(" \t") == std::string::npos) {
+        std::fprintf(stderr, "Error: --sound-player must name a command.\n");
+        return false;
+    }
     if (opt.simGpio && (opt.ledGapGpio >= 0 || opt.ledSpeedGpio >= 0))
         std::printf("Note: --sim-gpio prints LED transitions instead of driving the LED pins.\n");
     if (live && opt.playbackFps > 0)

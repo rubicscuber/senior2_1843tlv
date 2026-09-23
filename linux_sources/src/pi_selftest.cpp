@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "alert_leds.h"
+#include "alert_sound.h"
 #include "frame_parser.h"
 #include "safety_monitor.h"
 #include "tm_types.h"
@@ -244,6 +245,63 @@ void testLeds()
     check(!hold0.gapLedOn() && !hold0.speedLedOn(), "leds: hold 0 clears on the next frame without alerts");
 }
 
+// records the approach-alert transitions an audio output would receive
+struct RecordingListener : ApproachAlertListener {
+    std::vector<std::pair<bool, uint64_t>> events;
+    void onApproachAlert(bool active, uint64_t t) override { events.push_back({active, t}); }
+};
+
+void testSound()
+{
+    std::printf("-- approach alert -> audio\n");
+    AlertLedParams lp; // hold 1 s, frame timeout 1 s
+    RecordingListener rec;
+    AlertLeds leds(std::make_unique<RecordingBackend>(), lp);
+    leds.setApproachListener(&rec);
+
+    leds.onFrame(0, false, false);
+    leds.update(0);
+    check(rec.events.empty(), "sound: no transition without an approach alert");
+    leds.onFrame(50 * MS, false, true);
+    leds.update(50 * MS);
+    check(rec.events.size() == 1 && rec.events[0].first && rec.events[0].second == 50 * MS,
+          "sound: starts on the first alerting frame");
+    leds.onFrame(100 * MS, false, true);
+    leds.update(100 * MS);
+    leds.onFrame(150 * MS, false, false); // one frame without the target: held
+    leds.update(150 * MS);
+    leds.onFrame(200 * MS, false, true);
+    leds.update(200 * MS);
+    check(rec.events.size() == 1, "sound: stays started through the hold, no retrigger");
+    leds.onFrame(250 * MS, false, false);
+    leds.update(250 * MS);
+    leds.update(1200 * MS); // 1 s hold after the last alerting frame (200 ms) is over
+    check(rec.events.size() == 2 && !rec.events[1].first && rec.events[1].second == 1200 * MS,
+          "sound: stops once the hold has expired");
+    leds.onFrame(1300 * MS, false, true);
+    leds.update(1300 * MS);
+    leds.allOff(1400 * MS);
+    check(rec.events.size() == 4 && rec.events[2].first && !rec.events[3].first
+              && rec.events[3].second == 1400 * MS,
+          "sound: restarts on a new alert and allOff stops it");
+    leds.allOff(1500 * MS);
+    check(rec.events.size() == 4, "sound: allOff while inactive sends nothing");
+
+    // the sound module itself, in simulation (no player process)
+    AlertSoundParams sp;
+    sp.file = "alert.wav";
+    sp.simulate = true;
+    AlertSound snd(sp, 0);
+    snd.onApproachAlert(true, 10 * MS);
+    snd.onApproachAlert(true, 20 * MS);
+    check(snd.active() && snd.starts() == 1, "sound: repeated activation counts once");
+    snd.poll(30 * MS);
+    snd.onApproachAlert(false, 40 * MS);
+    check(!snd.active() && snd.starts() == 1, "sound: deactivation clears the active state");
+    snd.onApproachAlert(true, 50 * MS);
+    check(snd.starts() == 2, "sound: a new activation starts again");
+}
+
 // ---- frame parser: frames complete on the next magic word or on packetLength ----
 
 void putU32(std::vector<uint8_t>& b, uint32_t v)
@@ -324,6 +382,7 @@ int runPiSelfTests()
     testWheel();
     testSafety();
     testLeds();
+    testSound();
     testParser();
     if (g_failures == 0)
         std::printf("All self-tests passed.\n");
