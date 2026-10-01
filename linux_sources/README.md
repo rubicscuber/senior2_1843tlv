@@ -188,7 +188,11 @@ alert reacts within the frame period rather than one frame later.
 
 **Approach alert audio.** `--alert-sound <file>` plays the file (WAV is the
 safe choice) through the Pi's 3.5 mm jack for as long as the approach alert
-is active: the player is started when the alert begins, restarted each time
+is active. A ready-made sound ships in `sounds/alert.wav`: a 1 s two-tone
+warble (1000/1500 Hz) with a short silent tail, 16-bit stereo 44.1 kHz, the
+headphone output's native format; `sounds/make_alert_wav.py` regenerates it
+and its constants (tones, timing, volume) can be edited to taste. Playback
+works like this: the player is started when the alert begins, restarted each time
 the file ends while the alert lasts (`--sound-once` plays it a single time
 per alert instead) and stopped the moment the alert ends. The player is a
 separate process (`aplay -q` from alsa-utils by default), so audio never
@@ -199,9 +203,9 @@ sudo apt install alsa-utils          # aplay (already present on Raspberry Pi OS
 aplay -l                             # the jack shows up as "bcm2835 Headphones"
 sudo raspi-config                    # System Options > Audio > Headphones
 amixer -c Headphones sset Headphones 90%
-aplay alert.wav                      # must be audible from the jack
+aplay sounds/alert.wav               # must be audible from the jack
 ./console_only_Pi capture.dat --self-speed 10 --approach-threshold 2 \
-                  --alert-sound alert.wav --sound-check --playback-fps 20
+                  --alert-sound sounds/alert.wav --sound-check --playback-fps 20
 ```
 
 `--sound-check` plays the file once at start and refuses to run if that
@@ -261,10 +265,10 @@ Examples:
 # live: wheel sensor on GPIO17, gap LED on GPIO22, approach alert as audio
 ./console_only_Pi -d /dev/ttyACM1 -c /dev/ttyACM0 -g ../chirp_configs/IWR_1843BOOST_bike.cfg \
                   --approach-threshold 2 --pulse-gpio 17 --wheel-diameter 0.7 --pulses-per-rev 1 \
-                  --led-gap-gpio 22 --alert-sound alert.wav
+                  --led-gap-gpio 22 --alert-sound sounds/alert.wav
 
 # the same with a flashing LED on GPIO23 as well
-./console_only_Pi ... --led-gap-gpio 22 --led-speed-gpio 23 --alert-sound alert.wav
+./console_only_Pi ... --led-gap-gpio 22 --led-speed-gpio 23 --alert-sound sounds/alert.wav
 ```
 
 Each frame line gains the self speed and each target a third line:
@@ -343,7 +347,8 @@ Settings for the boot run, including the safety monitor, live in
 `WHEEL_DIAMETER`, `PULSES_PER_REV`, `PULSE_GPIO`, `LED_GAP_GPIO`,
 `LED_SPEED_GPIO`, `CORRIDOR`, `ALERT_SOUND`, `SOUND_PLAYER` or `EXTRA_ARGS`
 as needed (an empty `LED_*_GPIO` means no LED on that pin; `ALERT_SOUND` is
-the audio file for the approach alert, given with an absolute path). The script logs the assembled command
+the audio file for the approach alert, e.g. `sounds/alert.wav`, relative to
+`linux_sources` or absolute). The script logs the assembled command
 line at start, so `journalctl` shows exactly what ran.
 To have the Pi launch it after every successful boot, install it once as a
 systemd service:
@@ -456,6 +461,7 @@ objects do appear as tracks on a moving platform; the monitor reports them as
 | `src/safety_monitor.*` | closing speed, ground speed, two-second rule and approach alert per target |
 | `src/alert_leds.*` | alert hold/flash/fail-safe state machine with GPIO, console and null LED backends |
 | `src/alert_sound.*` | approach alert audio: runs a player (`aplay`) as a child process while the alert is active |
+| `sounds/alert.wav`, `sounds/make_alert_wav.py` | the shipped alert sound and the script that generates it |
 | `src/pi_selftest.*` | built-in logic tests (`console_only_Pi --self-test`) |
 | `src/wheel_test.cpp` | wheel-speed sensor bench test (`wheel_test` executable) |
 | `src/mono_clock.h` | CLOCK_MONOTONIC helper shared by the modules above |
