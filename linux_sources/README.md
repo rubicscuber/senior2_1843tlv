@@ -101,8 +101,8 @@ and in the original MATLAB visualizer.
 ## console_only: raw TLV packet dump
 
 `console_only` prints every frame's header fields and each TLV (type, name,
-length, payload hex) straight to stdout with no screen control — useful for
-debugging the stream format or piping to a file:
+length, payload hex) straight to stdout with no screen control. 
+Use this program on a developer laptop with direct UART connection to EVM:
 
 ```sh
 ./console_only capture.dat                 # dump a recorded stream
@@ -191,32 +191,75 @@ safe choice) through the Pi's 3.5 mm jack for as long as the approach alert
 is active. A ready-made sound ships in `sounds/alert.wav`: a 1 s two-tone
 warble (1000/1500 Hz) with a short silent tail, 16-bit stereo 44.1 kHz, the
 headphone output's native format; `sounds/make_alert_wav.py` regenerates it
-and its constants (tones, timing, volume) can be edited to taste. Playback
-works like this: the player is started when the alert begins, restarted each time
-the file ends while the alert lasts (`--sound-once` plays it a single time
-per alert instead) and stopped the moment the alert ends. The player is a
-separate process (`aplay -q` from alsa-utils by default), so audio never
-delays the radar loop. One-time setup on the Pi:
+and its constants (tones, timing, volume) can be edited to taste. 
+
+Playback works like this: the player is started when the alert begins, restarted 
+each time the file ends while the alert lasts  and stopped the moment the alert ends. 
+`--sound-once` plays it a single time per alert instead. The player is a
+separate process (`aplay` from alsa-utils), so audio never delays the radar
+loop.
+
+Always give the player the jack explicitly, as `aplay -q -D plughw:Headphones`.
+ALSA's "default" device is usually the HDMI output on current Raspberry Pi OS
+(`aplay sounds/alert.wav` then fails with `audio open error: Unknown error
+524` when no screen is attached), and on the desktop image the default goes
+through PipeWire, which only exists inside the logged-in desktop session and
+is not reachable from the boot service. `plughw:Headphones` opens the jack
+hardware directly and works in both cases; raspi-config's audio menu is not
+needed (it refuses to run under PipeWire anyway).
+
+One-time check on the Pi, from `linux_sources`:
 
 ```sh
-sudo apt install alsa-utils          # aplay (already present on Raspberry Pi OS)
-aplay -l                             # the jack shows up as "bcm2835 Headphones"
-sudo raspi-config                    # System Options > Audio > Headphones
-amixer -c Headphones sset Headphones 90%
-aplay sounds/alert.wav               # must be audible from the jack
-./console_only_Pi capture.dat --self-speed 10 --approach-threshold 2 \
-                  --alert-sound sounds/alert.wav --sound-check --playback-fps 20
+sudo apt install alsa-utils                       # aplay (already present on Raspberry Pi OS)
+aplay -l                                          # the jack must be listed as "bcm2835 Headphones"
+amixer -c Headphones scontrols                    # lists the card's one control: 'Headphone'
+amixer -c Headphones sset Headphone 90%           # volume (persists via alsa-restore)
+aplay -D plughw:Headphones sounds/alert.wav       # from a terminal, to verify: must be audible
+```
+
+Then run the program with the same device:
+
+```sh
+# command line
+./console_only_Pi capture.dat --self-speed 10 --approach-threshold 2 --playback-fps 20 \
+                  --alert-sound sounds/alert.wav --sound-player "aplay -q -D plughw:Headphones" --sound-check
+
+# boot service: in startpi_boot.env set these env variables for the proper sound device
+ALERT_SOUND=sounds/alert.wav
+SOUND_PLAYER=aplay -q -D plughw:Headphones
 ```
 
 `--sound-check` plays the file once at start and refuses to run if that
-fails. If `aplay` picks the wrong output (HDMI, a USB sound card), point it
-at the jack explicitly: `--sound-player "aplay -q -D plughw:Headphones"`.
+fails, so a wrong device shows up immediately. Troubleshooting:
+
+- `aplay -l` does not list `Headphones`: enable the jack with
+  `dtparam=audio=on` in `/boot/firmware/config.txt` and reboot.
+- `Device or resource busy`: the desktop's PipeWire is holding the jack at
+  that moment. It releases a card a few seconds after it last played
+  anything; to reserve the jack for the alert permanently, find the card with
+  `wpctl status` (usually `alsa_card.platform-bcm2835_audio`) and create
+  `~/.config/wireplumber/wireplumber.conf.d/51-reserve-jack.conf` with
+
+  ```
+  monitor.alsa.rules = [
+    {
+      matches = [ { device.name = "alsa_card.platform-bcm2835_audio" } ]
+      actions = { update-props = { device.disabled = true } }
+    }
+  ]
+  ```
+
+  then log out and in. The Lite image has no PipeWire, so none of this
+  applies there.
+- Permission denied: the user running the program must be in the `audio`
+  group (the default Raspberry Pi OS user is).
+
 Other players work the same way as long as they take the file as their last
-argument and exit when the file ends (`mpg123 -q` for MP3, `paplay` on a
-desktop image with PipeWire). The user running the program must be in the
-`audio` group (the default Raspberry Pi OS user is). In unpaced file replay
-the audio is only printed as `[SOUND] start/stop` lines, because the clock
-is synthetic there; use `--playback-fps` to hear it.
+argument and exit when the file ends (`mpg123 -q -a plughw:Headphones` for
+MP3). In unpaced file replay the audio is only printed as
+`[SOUND] start/stop` lines, because the clock is synthetic there; use
+`--playback-fps` to hear it.
 
 If the wheel sensor goes silent for 30 s while targets are being tracked, a
 warning is printed: with a self speed of 0 every target keeping pace counts
@@ -243,7 +286,7 @@ Options (all speeds in m/s):
 | `--max-speed <m/s>`, `--stop-timeout <s>` | 40, 2 | glitch filter (faster pulses are ignored) / speed reads 0 after this long without a pulse |
 | `--led-gap-gpio <bcm>`, `--led-speed-gpio <bcm>` | — | LED output pins (steady gap LED / flashing approach LED) |
 | `--alert-sound <file>` | — | audio file played out of the 3.5 mm jack while the approach alert is active |
-| `--sound-player <cmd>` | `aplay -q` | player command; the file is appended as the last argument |
+| `--sound-player <cmd>` | `aplay -q` | player command; the file is appended as the last argument. On a Pi use `"aplay -q -D plughw:Headphones"` so the 3.5 mm jack is opened directly |
 | `--sound-once` | off | play the file once per alert instead of repeating it while the alert lasts |
 | `--sound-check` | off | play the file once at start; exit with an error if that fails |
 | `--led-active-low` | off | LEDs light when the pin is driven low |
@@ -411,7 +454,9 @@ Needed only for the approach alert audio (`--alert-sound`):
 - `alsa-utils` for `aplay` (installed by default on Raspberry Pi OS), and
   membership in the `audio` group for the user running the program (the
   default Raspberry Pi OS user has it). The 3.5 mm jack needs `dtparam=audio=on`
-  in `/boot/firmware/config.txt`, which is the default.
+  in `/boot/firmware/config.txt`, which is the default, and is addressed as
+  `plughw:Headphones` (`--sound-player "aplay -q -D plughw:Headphones"`);
+  verify with `aplay -D plughw:Headphones sounds/alert.wav`.
 
 Optional: `sudo apt install gpiod` for the command-line tools used in the
 bench checks below (libgpiod 2.x syntax as shipped by trixie; the 1.x syntax

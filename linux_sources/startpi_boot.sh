@@ -44,7 +44,8 @@ LED_GAP_GPIO="${LED_GAP_GPIO-22}"             # BCM pin of the two-second-rule L
 LED_SPEED_GPIO="${LED_SPEED_GPIO-23}"         # BCM pin of the approach-alert LED; empty = none
 CORRIDOR="${CORRIDOR-}"                       # lateral half-width (m) for the gap rule; empty = off
 ALERT_SOUND="${ALERT_SOUND-}"                 # audio file played (3.5 mm jack) during an approach alert; empty = none
-SOUND_PLAYER="${SOUND_PLAYER-}"               # player command for it; empty = console_only_Pi's default (aplay -q)
+SOUND_PLAYER="${SOUND_PLAYER-}"               # player command for it, normally "aplay -q -D plughw:Headphones" (the jack);
+                                              # empty = console_only_Pi's default "aplay -q" = ALSA default device
 EXTRA_ARGS="${EXTRA_ARGS-}"                   # further console_only_Pi options, e.g. "--led-active-low"
 
 LOG_DIR="$SCRIPT_DIR/logs"

@@ -620,7 +620,7 @@ void printUsage(const char* prog)
         "  --alert-sound <file>        approach alert: play this audio file (e.g. WAV) out of\n"
         "                              the audio jack while the alert is active\n"
         "  --sound-player <cmd>        player command, the file is appended (default \"aplay -q\";\n"
-        "                              e.g. \"aplay -q -D plughw:Headphones\")\n"
+        "                              on a Pi use \"aplay -q -D plughw:Headphones\" for the jack)\n"
         "  --sound-once                play the file once per alert instead of repeating it\n"
         "  --sound-check               play the file once at start to verify the audio path\n"
         "  --led-speed-gpio <bcm>      flashing LED output for approach alerts (can be used\n"
@@ -641,8 +641,8 @@ void printUsage(const char* prog)
         "\n"
         "Wiring: hall switch output -> pulse GPIO (internal pull-up), GND common;\n"
         "LED anode -> 330 ohm -> LED GPIO, cathode -> GND (active-high).\n"
-        "Audio: route the Pi's output to the 3.5 mm jack (raspi-config > Audio, or\n"
-        "--sound-player with -D <device> from 'aplay -l'); test with --sound-check.\n",
+        "Audio: open the 3.5 mm jack directly with --sound-player \"aplay -q -D plughw:Headphones\"\n"
+        "(verify: aplay -D plughw:Headphones sounds/alert.wav); then test with --sound-check.\n",
         prog, prog);
 }
 
