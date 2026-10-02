@@ -23,8 +23,12 @@ built-in logic tests of the safety monitor and the frame parser. On a Raspberry 
 
 ## Running
 
-A chirp configuration file is always required (`-g`). Use one of the files in
-`../chirp_configs/`, matching the binary flashed on the EVM.
+Use the provided shell script `startpi_console.sh`
+Change any of the arguments desired. Note that `--self-speed` will assume you're testing
+from a stationary platform.
+
+Full depolyment will require either the boot script to be installed and all the 
+neccessary environment variables set or a shell script will all the necessary args.
 
 ### Playback mode (replay a recorded stream)
 
@@ -48,11 +52,12 @@ automatically.
 `-c` is the CLI/config port (115200 baud) and `-d` the data port (921600
 baud); on Linux the XDS110 usually enumerates as `/dev/ttyACM0` and
 `/dev/ttyACM1` (or `/dev/ttyUSB0`/`ttyUSB1`). Add your user to the `dialout`
-group if you get permission errors. If the device is already configured and
-streaming (e.g. after a previous run without NRST), pass `--no-load` and omit
-`-c`.
+group if you get permission errors. 
 
-`-r <file>` records the raw data stream as hex, replayable both here (`-f`)
+If the device is already configured and streaming (after a previous run without NRST), 
+pass `--no-load` and omit `-c`.
+
+`-r <file>` records the raw data stream as hex, replayable both here
 and in the original MATLAB visualizer.
 
 ### Options
@@ -83,7 +88,7 @@ and in the original MATLAB visualizer.
 | `n` / `b` | step forward / back one frame (playback; the GUI's slider) |
 | `q` or Ctrl-C | quit |
 
-## Display
+## tm_visualiser Display Elements
 
 - gray dots — sensor boresight and approximate FOV guide lines
 - blue `*` — detected point cloud (TLV 1000), transformed by the azimuth and
@@ -113,6 +118,8 @@ Use this program on a developer laptop with direct UART connection to EVM:
 ./console_only -d /dev/ttyACM1 -c /dev/ttyACM0 \
                -g ../chirp_configs/18xx_traffic_monitoring_70m_MIMO_3D.cfg
 ```
+If you had passed the config file to the EVM and quit out of the program with `ctrl-c`
+then re-attach to the data port by handing `-d` and `--no-load`
 
 Without `-c`/`-g` the device must already be configured and streaming. As in
 the visualizer, if the data port already has bytes waiting, the cfg is not
@@ -150,8 +157,9 @@ for a **rear-facing** radar: it derives the vehicle's own ground speed from a
 hall-effect wheel sensor on a GPIO pin (or a fixed `--self-speed`), works out
 each target's closing speed and whether it keeps a two-second gap, lights a
 LED on a gap violation and, on a fast approach, plays an audio file out of the
-Pi's 3.5 mm jack (`--alert-sound`) and/or flashes a second LED. Without the
-flag the output is identical to the plain report.
+Pi's 3.5 mm jack (`--alert-sound`) and/or flashes a second LED. 
+
+Without the `--approach-threshold` flag the output is identical to the plain report.
 
 Wiring (BCM numbering; the defaults in `startpi_boot.sh` are 17 / 22 / 23):
 
@@ -214,7 +222,7 @@ One-time check on the Pi, from `linux_sources`:
 sudo apt install alsa-utils                       # aplay (already present on Raspberry Pi OS)
 aplay -l                                          # the jack must be listed as "bcm2835 Headphones"
 amixer -c Headphones scontrols                    # lists the card's one control: 'Headphone'
-amixer -c Headphones sset Headphone 90%           # volume (persists via alsa-restore)
+amixer -c Headphones sset PCM 90%                 # volume (must be set every time)
 aplay -D plughw:Headphones sounds/alert.wav       # from a terminal, to verify: must be audible
 ```
 
