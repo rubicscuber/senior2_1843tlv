@@ -501,7 +501,7 @@ objects do appear as tracks on a moving platform; the monitor reports them as
 
 | File | Ports |
 |---|---|
-| `src/main.cpp` | `tm_visualizer.m` — setup, mode selection, main loop, transforms |
+| `src/tm_visualizer.cpp` | `tm_visualizer.m` — setup, mode selection, main loop, transforms |
 | `src/cfg_parser.*` | `readCfgFile.m`, `defineCLICommands.m`, `parseCLICommands2Struct.m`, `calculateChirpParams.m` |
 | `src/frame_parser.*` | `parseBytes_TM.m`, `getTLV.m`, `getGtrackFrameHeader.m`, `getGtrackPtCloud.m`, `getGtrackTargetList.m`, `getGtrackPtType.m`, `readDATFile2Buffer.m` |
 | `src/serial_port.*` | `initCfgPort.m`, `initDataPort.m`, `loadCfg.m`, `readUARTtoBuffer.m` |
