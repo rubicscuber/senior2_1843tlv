@@ -1,5 +1,7 @@
 // Alert LED state machine: a steady LED for two-second-rule violations and a
-// rapidly flashing LED for approach alerts, with hold timers so a track that
+// rapidly flashing LED for approach alerts (or, in single-LED mode, one LED
+// that is steady for the gap rule and flashes for an approach alert, the
+// flashing taking priority when both are active), with hold timers so a track that
 // drops out for a frame does not flicker the LEDs, and a fail-safe that turns
 // everything off when the radar stops delivering frames.
 //
@@ -27,16 +29,19 @@ public:
     void setSpeedLed(bool, uint64_t) override {}
 };
 
-// prints "[LED] gap ON   t=12.345 s" for every transition (--sim-gpio)
+// prints "[LED] gap ON   t=12.345 s" for every transition (--sim-gpio);
+// singleLed: label the one combined LED "alert" instead of "gap"
 class ConsoleLedBackend : public LedBackend {
 public:
-    explicit ConsoleLedBackend(uint64_t epochNs) : epochNs_(epochNs) {}
+    explicit ConsoleLedBackend(uint64_t epochNs, bool singleLed = false)
+        : epochNs_(epochNs), singleLed_(singleLed) {}
     void setGapLed(bool on, uint64_t nowNs) override;
     void setSpeedLed(bool on, uint64_t nowNs) override;
 
 private:
     void print(const char* which, bool on, uint64_t nowNs) const;
     uint64_t epochNs_;
+    bool singleLed_;
 };
 
 // Receives the approach alert's active/inactive transitions (after hold time
@@ -65,6 +70,9 @@ struct AlertLedParams {
                                       // (an alert is always kept at least until the next frame; 0 = only that)
     double flashHz = 8.0;             // speed LED flash rate (<= 0: steady)
     double frameTimeoutSeconds = 1.0; // no valid radar frame for this long -> all LEDs off
+    bool singleLed = false;           // one LED for both alerts, driven through the gap LED output:
+                                      // steady on a gap violation, flashing on an approach alert
+                                      // (flashing wins when both are active); the speed output stays off
 };
 
 class AlertLeds {
@@ -88,8 +96,8 @@ public:
 
     bool gapActive() const { return gapActive_; }
     bool approachActive() const { return approachActive_; }
-    bool gapLedOn() const { return gapLed_; }
-    bool speedLedOn() const { return speedLed_; }
+    bool gapLedOn() const { return gapLed_; }     // single-LED mode: the combined LED
+    bool speedLedOn() const { return speedLed_; } // single-LED mode: always false
 
 private:
     void apply(uint64_t nowNs, bool gapOn, bool speedOn);
@@ -99,6 +107,7 @@ private:
     uint64_t holdNs_;
     uint64_t halfPeriodNs_;
     uint64_t frameTimeoutNs_;
+    bool singleLed_;
     uint64_t gapUntil_ = 0;
     uint64_t approachUntil_ = 0;
     uint64_t lastFrame_ = 0;

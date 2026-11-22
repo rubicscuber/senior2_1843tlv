@@ -86,6 +86,7 @@ struct PiOptions {
     std::string gpiochip;
     int ledGapGpio = -1;
     int ledSpeedGpio = -1;
+    int ledGpio = -1;                   // single combined alert LED (--led-gpio)
     bool ledActiveLow = false;
     bool simGpio = false;
     bool pulseVerbose = false;
@@ -329,8 +330,15 @@ bool setupSafety(const PiOptions& opt, uint64_t epochNs, bool simulateSound,
     std::unique_ptr<LedBackend> backend;
     std::string ledMode;
     if (opt.simGpio) {
-        backend = std::make_unique<ConsoleLedBackend>(epochNs);
-        ledMode = "simulated (printed to console)";
+        backend = std::make_unique<ConsoleLedBackend>(epochNs, opt.leds.singleLed);
+        ledMode = opt.leds.singleLed ? "simulated single LED (printed to console)"
+                                     : "simulated (printed to console)";
+    } else if (opt.ledGpio >= 0) {
+        std::unique_ptr<GpioOutput> led;
+        if (!openLed(opt, opt.ledGpio, "Alert (steady = gap, flashing = approach)", led))
+            return false;
+        backend = std::make_unique<GpioLedBackend>(std::move(led), nullptr);
+        ledMode = "GPIO, single LED";
     } else if (opt.ledGapGpio >= 0 || opt.ledSpeedGpio >= 0) {
         std::unique_ptr<GpioOutput> gap, speed;
         if (!openLed(opt, opt.ledGapGpio, "Gap", gap) || !openLed(opt, opt.ledSpeedGpio, "Speed", speed))
@@ -616,6 +624,9 @@ void printUsage(const char* prog)
         "  --pulse-debounce-us <n>     kernel debounce, 0 = off (default 500)\n"
         "  --max-speed <m/s>           glitch filter: faster pulses are ignored (default 40)\n"
         "  --stop-timeout <s>          speed reads 0 after this long without a pulse (default 2)\n"
+        "  --led-gpio <bcm>            single alert LED: steady for two-second-rule\n"
+        "                              violations, flashing for approach alerts (flashing\n"
+        "                              wins when both are active); replaces the two below\n"
         "  --led-gap-gpio <bcm>        steady LED output for two-second-rule violations\n"
         "  --alert-sound <file>        approach alert: play this audio file (e.g. WAV) out of\n"
         "                              the audio jack while the alert is active\n"
@@ -777,6 +788,10 @@ bool parseArgs(int argc, char** argv, PiOptions& opt, int& exitCode)
             if (!(v = need(i)) || !parseInt("--led-gap-gpio", v, n)) return false;
             opt.ledGapGpio = n;
             monitorFlag(a);
+        } else if (a == "--led-gpio") {
+            if (!(v = need(i)) || !parseInt("--led-gpio", v, n)) return false;
+            opt.ledGpio = n;
+            opt.leds.singleLed = true;
         } else if (a == "--led-speed-gpio") {
             if (!(v = need(i)) || !parseInt("--led-speed-gpio", v, n)) return false;
             opt.ledSpeedGpio = n;
@@ -897,13 +912,22 @@ bool parseArgs(int argc, char** argv, PiOptions& opt, int& exitCode)
     } else if (opt.wheelDiameterSet || opt.pulsesPerRevSet || opt.pulseVerbose) {
         std::printf("Note: wheel options have no effect with --self-speed.\n");
     }
+    if (opt.ledGpio >= 0 && (opt.ledGapGpio >= 0 || opt.ledSpeedGpio >= 0)) {
+        std::fprintf(stderr, "Error: use either --led-gpio (one LED) or --led-gap-gpio/--led-speed-gpio "
+                             "(two LEDs), not both.\n");
+        return false;
+    }
+    if (opt.pulseGpio >= 0 && opt.pulseGpio == opt.ledGpio) {
+        std::fprintf(stderr, "Error: --pulse-gpio and --led-gpio must be different pins.\n");
+        return false;
+    }
     if ((opt.pulseGpio >= 0 && (opt.pulseGpio == opt.ledGapGpio || opt.pulseGpio == opt.ledSpeedGpio))
         || (opt.ledGapGpio >= 0 && opt.ledGapGpio == opt.ledSpeedGpio)) {
         std::fprintf(stderr, "Error: --pulse-gpio, --led-gap-gpio and --led-speed-gpio must be "
                              "different pins.\n");
         return false;
     }
-    if (opt.ledActiveLow && opt.ledGapGpio < 0 && opt.ledSpeedGpio < 0)
+    if (opt.ledActiveLow && opt.ledGpio < 0 && opt.ledGapGpio < 0 && opt.ledSpeedGpio < 0)
         std::printf("Note: --led-active-low has no effect without LED pins.\n");
     if (opt.sound.file.empty() && (opt.soundCheck || !opt.sound.repeat || opt.sound.player != "aplay -q"))
         std::printf("Note: --sound-player/--sound-once/--sound-check have no effect without --alert-sound.\n");
@@ -911,7 +935,7 @@ bool parseArgs(int argc, char** argv, PiOptions& opt, int& exitCode)
         std::fprintf(stderr, "Error: --sound-player must name a command.\n");
         return false;
     }
-    if (opt.simGpio && (opt.ledGapGpio >= 0 || opt.ledSpeedGpio >= 0))
+    if (opt.simGpio && (opt.ledGpio >= 0 || opt.ledGapGpio >= 0 || opt.ledSpeedGpio >= 0))
         std::printf("Note: --sim-gpio prints LED transitions instead of driving the LED pins.\n");
     if (live && opt.playbackFps > 0)
         std::printf("Note: --playback-fps only applies to file mode; ignoring.\n");

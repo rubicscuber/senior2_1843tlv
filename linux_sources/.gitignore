@@ -6,3 +6,5 @@ console_only
 console_only_Pi
 wheel_test
 .err
+hall_test
+led_sound_test

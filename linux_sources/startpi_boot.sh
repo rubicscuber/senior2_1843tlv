@@ -40,8 +40,10 @@ GAP_SECONDS="${GAP_SECONDS-2}"                # two-second rule threshold, s
 WHEEL_DIAMETER="${WHEEL_DIAMETER-0.7}"        # wheel diameter, m
 PULSES_PER_REV="${PULSES_PER_REV-1}"          # hall-effect pulses per wheel revolution
 PULSE_GPIO="${PULSE_GPIO-17}"                 # BCM pin of the wheel sensor
-LED_GAP_GPIO="${LED_GAP_GPIO-22}"             # BCM pin of the two-second-rule LED; empty = none
-LED_SPEED_GPIO="${LED_SPEED_GPIO-23}"         # BCM pin of the approach-alert LED; empty = none
+LED_GPIO="${LED_GPIO-22}"                     # BCM pin of the single alert LED (steady = two-second rule,
+                                              # flashing = approach alert); empty = use the two-LED pins below
+LED_GAP_GPIO="${LED_GAP_GPIO-}"               # two-LED setup only: BCM pin of the two-second-rule LED
+LED_SPEED_GPIO="${LED_SPEED_GPIO-}"           # two-LED setup only: BCM pin of the approach-alert LED
 CORRIDOR="${CORRIDOR-}"                       # lateral half-width (m) for the gap rule; empty = off
 ALERT_SOUND="${ALERT_SOUND-}"                 # audio file played (3.5 mm jack) during an approach alert; empty = none
 SOUND_PLAYER="${SOUND_PLAYER-}"               # player command for it, normally "aplay -q -D plughw:Headphones" (the jack);
@@ -72,11 +74,15 @@ set -- -g "$CFG_FILE" -c "$CLI_PORT" -d "$DATA_PORT"
 if [ -n "$APPROACH_THRESHOLD" ]; then
     set -- "$@" --approach-threshold "$APPROACH_THRESHOLD" --gap-seconds "$GAP_SECONDS" \
         --pulse-gpio "$PULSE_GPIO" --wheel-diameter "$WHEEL_DIAMETER" --pulses-per-rev "$PULSES_PER_REV"
-    if [ -n "$LED_GAP_GPIO" ]; then
-        set -- "$@" --led-gap-gpio "$LED_GAP_GPIO"
-    fi
-    if [ -n "$LED_SPEED_GPIO" ]; then
-        set -- "$@" --led-speed-gpio "$LED_SPEED_GPIO"
+    if [ -n "$LED_GPIO" ]; then
+        set -- "$@" --led-gpio "$LED_GPIO"
+    else
+        if [ -n "$LED_GAP_GPIO" ]; then
+            set -- "$@" --led-gap-gpio "$LED_GAP_GPIO"
+        fi
+        if [ -n "$LED_SPEED_GPIO" ]; then
+            set -- "$@" --led-speed-gpio "$LED_SPEED_GPIO"
+        fi
     fi
     if [ -n "$CORRIDOR" ]; then
         set -- "$@" --corridor "$CORRIDOR"

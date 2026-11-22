@@ -9,7 +9,7 @@
 
 void ConsoleLedBackend::setGapLed(bool on, uint64_t nowNs)
 {
-    print("gap", on, nowNs);
+    print(singleLed_ ? "alert" : "gap", on, nowNs);
 }
 
 void ConsoleLedBackend::setSpeedLed(bool on, uint64_t nowNs)
@@ -50,7 +50,8 @@ AlertLeds::AlertLeds(std::unique_ptr<LedBackend> backend, const AlertLedParams& 
     : backend_(std::move(backend)),
       holdNs_(static_cast<uint64_t>(std::max(0.0, p.holdSeconds) * 1e9)),
       halfPeriodNs_(p.flashHz > 0.0 ? static_cast<uint64_t>(0.5e9 / p.flashHz) : 0),
-      frameTimeoutNs_(static_cast<uint64_t>(std::max(0.0, p.frameTimeoutSeconds) * 1e9))
+      frameTimeoutNs_(static_cast<uint64_t>(std::max(0.0, p.frameTimeoutSeconds) * 1e9)),
+      singleLed_(p.singleLed)
 {
 }
 
@@ -89,7 +90,10 @@ void AlertLeds::update(uint64_t nowNs)
         else
             speedOn = (((nowNs - flashEpoch_) / halfPeriodNs_) % 2) == 0;
     }
-    apply(nowNs, gap, speedOn);
+    if (singleLed_)
+        apply(nowNs, approach ? speedOn : gap, false); // flashing overrides the steady gap light
+    else
+        apply(nowNs, gap, speedOn);
     if (approachChanged && listener_)
         listener_->onApproachAlert(approach, nowNs);
 }

@@ -13,10 +13,12 @@ cd linux_sources
 make
 ```
 
-This produces four executables: `tm_visualizer` (the visualizer),
+This produces six executables: `tm_visualizer` (the visualizer),
 `console_only` (a raw packet dumper), `console_only_Pi` (a target
 detection reporter and rider safety monitor for headless/Raspberry Pi use)
-and `wheel_test` (a bench test for the wheel-speed sensor input).
+`wheel_test` (a bench test for the wheel-speed sensor input) and `hall_test`
+(a raw edge/RPM test for the hall-effect switch) and `led_sound_test` (a test
+of the alert LED and speaker).
 `make clean` removes them and the `build/` directory; `make selftest` runs the
 built-in logic tests of the safety monitor and the frame parser. On a Raspberry Pi see
 *Requirements on Debian 13 (trixie) 64-bit* below.
@@ -157,11 +159,16 @@ for a **rear-facing** radar: it derives the vehicle's own ground speed from a
 hall-effect wheel sensor on a GPIO pin (or a fixed `--self-speed`), works out
 each target's closing speed and whether it keeps a two-second gap, lights a
 LED on a gap violation and, on a fast approach, plays an audio file out of the
-Pi's 3.5 mm jack (`--alert-sound`) and/or flashes a second LED. 
+Pi's 3.5 mm jack (`--alert-sound`) and/or flashes a LED. With one LED
+(`--led-gpio`, the prototype's single red LED) the LED is steady while the
+two-second rule is broken and flashes during an approach alert; flashing wins
+when both are active. With two LEDs (`--led-gap-gpio` / `--led-speed-gpio`)
+each alert has its own.
 
 Without the `--approach-threshold` flag the output is identical to the plain report.
 
-Wiring (BCM numbering; the defaults in `startpi_boot.sh` are 17 / 22 / 23):
+Wiring (BCM numbering; the defaults in `startpi_boot.sh` are GPIO17 for the
+wheel sensor and GPIO22 for the single alert LED):
 
 - hall-effect switch: output -> `--pulse-gpio` (the internal pull-up is
   enabled and the switch pulls the pin low when the magnet passes), GND
@@ -292,7 +299,8 @@ Options (all speeds in m/s):
 | `--pulse-bias pull-up\|pull-down\|none` | pull-up | input bias |
 | `--pulse-debounce-us <n>` | 500 | kernel debounce, 0 = off (with many pulses per revolution use 0 for the most precise timestamps) |
 | `--max-speed <m/s>`, `--stop-timeout <s>` | 40, 2 | glitch filter (faster pulses are ignored) / speed reads 0 after this long without a pulse |
-| `--led-gap-gpio <bcm>`, `--led-speed-gpio <bcm>` | — | LED output pins (steady gap LED / flashing approach LED) |
+| `--led-gpio <bcm>` | — | single alert LED: steady for the gap rule, flashing for an approach alert |
+| `--led-gap-gpio <bcm>`, `--led-speed-gpio <bcm>` | — | two-LED setup instead: steady gap LED / flashing approach LED |
 | `--alert-sound <file>` | — | audio file played out of the 3.5 mm jack while the approach alert is active |
 | `--sound-player <cmd>` | `aplay -q` | player command; the file is appended as the last argument. On a Pi use `"aplay -q -D plughw:Headphones"` so the 3.5 mm jack is opened directly |
 | `--sound-once` | off | play the file once per alert instead of repeating it while the alert lasts |
@@ -313,12 +321,13 @@ Examples:
 # recorded stream, fixed 10 m/s self speed, LED transitions printed:
 ./console_only_Pi capture.dat --self-speed 10 --approach-threshold 2 --corridor 1.75 --sim-gpio
 
-# live: wheel sensor on GPIO17, gap LED on GPIO22, approach alert as audio
+# live: wheel sensor on GPIO17, single alert LED on GPIO22 (steady = gap,
+# flashing = approach), approach alert also as audio
 ./console_only_Pi -d /dev/ttyACM1 -c /dev/ttyACM0 -g ../chirp_configs/IWR_1843BOOST_bike.cfg \
                   --approach-threshold 2 --pulse-gpio 17 --wheel-diameter 0.7 --pulses-per-rev 1 \
-                  --led-gap-gpio 22 --alert-sound sounds/alert.wav
+                  --led-gpio 22 --alert-sound sounds/alert.wav
 
-# the same with a flashing LED on GPIO23 as well
+# two-LED setup instead: steady gap LED on GPIO22, flashing approach LED on GPIO23
 ./console_only_Pi ... --led-gap-gpio 22 --led-speed-gpio 23 --alert-sound sounds/alert.wav
 ```
 
@@ -382,6 +391,41 @@ everything. `wheel_test` and `console_only_Pi` cannot use the same pin at the
 same time (the kernel reports the line as busy), so stop the boot service
 first: `sudo systemctl stop console_only_pi`.
 
+### hall_test: raw hall-effect switch check
+
+`hall_test` is a simpler, standalone check of the Littelfuse 55100-3M switch
+that does not depend on any other source file. It prints the initial pin
+level, one line per magnet arrival or departure with the kernel timestamp,
+the interval between pulses, the frequency and the RPM, and a summary on
+Ctrl-C. The internal pull-up is on by default. The level reads 1 idle and 0
+with a south pole at the sensor.
+
+```sh
+./hall_test                 # GPIO17 (pin 11)
+./hall_test -l 27 -p 6      # another pin, 6 magnets per revolution for RPM
+```
+
+It can also be built on its own without the Makefile:
+`g++ -std=c++17 -O2 -Wall -o hall_test src/hall_test.cpp`.
+
+### led_sound_test: alert LED and speaker check
+
+`led_sound_test` exercises the prototype's alert outputs with no radar, using
+the same LED and sound code as `console_only_Pi` (single-LED mode). Each round
+runs: the LED steady (a two-second-rule violation), the alert file played once
+on the speaker, the LED flashing with the sound (an approach alert), then all
+off. Run it from `linux_sources` so the default `sounds/alert.wav` is found.
+
+```sh
+./led_sound_test                    # LED on GPIO22, sound via the 3.5 mm jack
+./led_sound_test --loop             # repeat until Ctrl-C
+./led_sound_test --no-sound         # LED only (or --no-led for the speaker only)
+./led_sound_test --led-gpio 27      # LED on another pin
+```
+
+Stop the boot service first if it is running (`sudo systemctl stop
+console_only_pi`), since it holds the LED pin.
+
 ### Running console_only_Pi automatically at boot
 
 `startpi_boot.sh` runs the same command as `startpi_console.sh`, hardened
@@ -395,7 +439,7 @@ environment variables.
 Settings for the boot run, including the safety monitor, live in
 `startpi_boot.env` next to the script (copy `startpi_boot.env.example`; plain
 `VAR=value` lines): set `APPROACH_THRESHOLD` to enable the monitor and adjust
-`WHEEL_DIAMETER`, `PULSES_PER_REV`, `PULSE_GPIO`, `LED_GAP_GPIO`,
+`WHEEL_DIAMETER`, `PULSES_PER_REV`, `PULSE_GPIO`, `LED_GPIO`, `LED_GAP_GPIO`,
 `LED_SPEED_GPIO`, `CORRIDOR`, `ALERT_SOUND`, `SOUND_PLAYER` or `EXTRA_ARGS`
 as needed (an empty `LED_*_GPIO` means no LED on that pin; `ALERT_SOUND` is
 the audio file for the approach alert, e.g. `sounds/alert.wav`, relative to
@@ -517,4 +561,6 @@ objects do appear as tracks on a moving platform; the monitor reports them as
 | `sounds/alert.wav`, `sounds/make_alert_wav.py` | the shipped alert sound and the script that generates it |
 | `src/pi_selftest.*` | built-in logic tests (`console_only_Pi --self-test`) |
 | `src/wheel_test.cpp` | wheel-speed sensor bench test (`wheel_test` executable) |
+| `src/hall_test.cpp` | standalone hall-effect switch edge/RPM test (`hall_test` executable) |
+| `src/led_sound_test.cpp` | alert LED + speaker bench test (`led_sound_test` executable) |
 | `src/mono_clock.h` | CLOCK_MONOTONIC helper shared by the modules above |

@@ -243,6 +243,36 @@ void testLeds()
     hold0.onFrame(50 * MS, false, false);
     hold0.update(50 * MS);
     check(!hold0.gapLedOn() && !hold0.speedLedOn(), "leds: hold 0 clears on the next frame without alerts");
+
+    // single-LED mode: steady for the gap rule, flashing for an approach alert,
+    // flashing wins when both are active, and only the gap output is driven
+    AlertLedParams single = lp;
+    single.singleLed = true;
+    auto rec4Owner = std::make_unique<RecordingBackend>();
+    RecordingBackend* rec4 = rec4Owner.get();
+    AlertLeds one(std::move(rec4Owner), single);
+    one.onFrame(0, true, false);
+    one.update(0);
+    one.update(70 * MS);
+    check(one.gapLedOn(), "single led: steady on for a gap violation (no flashing)");
+    one.onFrame(100 * MS, true, true);
+    one.update(100 * MS);
+    check(one.gapLedOn(), "single led: approach flash starts with the LED on");
+    one.update(170 * MS);
+    check(!one.gapLedOn() && one.gapActive(), "single led: flashing overrides the steady gap light");
+    one.update(230 * MS);
+    check(one.gapLedOn(), "single led: on again in the next half flash period");
+    one.onFrame(1150 * MS, true, false); // approach hold (1 s after 100 ms) is over, gap continues
+    one.update(1150 * MS);
+    one.update(1220 * MS);
+    check(one.gapLedOn() && !one.approachActive(), "single led: back to steady when only the gap rule remains");
+    one.onFrame(2300 * MS, false, false);
+    one.update(2300 * MS);
+    check(!one.gapLedOn(), "single led: off once both alerts expire");
+    bool speedUsed = false;
+    for (const auto& e : rec4->events)
+        speedUsed = speedUsed || e.which == 's';
+    check(!speedUsed && !one.speedLedOn(), "single led: the second LED output is never driven");
 }
 
 // records the approach-alert transitions an audio output would receive
